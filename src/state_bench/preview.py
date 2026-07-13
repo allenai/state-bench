@@ -12,6 +12,7 @@ from state_bench.generation import generate_instance
 from state_bench.io import derive_seed, hub_config_name
 from state_bench.model import StateTrackingInstance
 from state_bench.rendering import RenderedExample, render_instance
+from state_bench.scheduling import AssignmentPlanItem, sample_assignment_plan_item
 
 
 @dataclass(frozen=True, slots=True)
@@ -20,6 +21,7 @@ class SamplePreview:
     seed: int
     instance: StateTrackingInstance
     rendered: RenderedExample
+    target_extra_assignments: int | None
 
     def to_record(self) -> dict[str, Any]:
         return {
@@ -27,6 +29,8 @@ class SamplePreview:
             "seed": self.seed,
             "canonical": self.instance.to_record(),
             "rendered": self.rendered.to_record(),
+            "num_extra_assignments": len(self.instance.operations) - self.instance.num_variables,
+            "target_extra_assignments": self.target_extra_assignments,
         }
 
 
@@ -51,6 +55,7 @@ def generate_preview(
     config_name: str,
     seed: int | None = None,
     num_variables: int | None = None,
+    extra_assignments: int | None = None,
 ) -> SamplePreview:
     """Generate one sample for a rendered config without creating output files."""
 
@@ -61,23 +66,33 @@ def generate_preview(
         for condition in conditions
         for candidate_num_variables in condition.num_variables
         if num_variables is None or candidate_num_variables == num_variables
+        if extra_assignments is None
+        or condition.extra_assignments.min <= extra_assignments <= condition.extra_assignments.max
     ]
     if not candidates:
         supported = sorted(
             {candidate for condition in conditions for candidate in condition.num_variables}
         )
         raise ValueError(
-            f"config {config_name!r} does not support num_variables={num_variables}; "
-            f"choose one of {supported}"
+            f"config {config_name!r} does not support num_variables={num_variables} and "
+            f"extra_assignments={extra_assignments}; variable counts are {supported}"
         )
 
     selection_rng = random.Random(derive_seed(resolved_seed, "preview", config_name, "selection"))
     condition, selected_num_variables = selection_rng.choice(candidates)
+    if extra_assignments is None:
+        plan_item = sample_assignment_plan_item(
+            condition.extra_assignments,
+            rng=random.Random(derive_seed(resolved_seed, "preview", config_name, "depth")),
+        )
+    else:
+        plan_item = AssignmentPlanItem(extra_assignments, extra_assignments, extra_assignments)
     instance = _generate(
         loaded,
         condition=condition,
         num_variables=selected_num_variables,
         seed=derive_seed(resolved_seed, "preview", config_name, "semantic"),
+        plan_item=plan_item,
     )
     incorrect_states = generate_incorrect_states(
         instance,
@@ -96,6 +111,7 @@ def generate_preview(
         seed=resolved_seed,
         instance=instance,
         rendered=rendered,
+        target_extra_assignments=plan_item.target_extra_assignments,
     )
 
 
@@ -114,7 +130,9 @@ def format_preview(preview: SamplePreview) -> str:
         f"Seed: {preview.seed}\n"
         f"Complexity: {preview.instance.complexity.value}\n"
         f"Variables: {preview.instance.num_variables}\n"
-        f"Assignments: {len(preview.instance.operations)}\n\n"
+        f"Assignments: {len(preview.instance.operations)}\n"
+        f"Extra assignments: {len(preview.instance.operations) - preview.instance.num_variables}\n"
+        f"Target extra-assignment bucket: {preview.target_extra_assignments}\n\n"
         f"Canonical trace:\n{operations}\n\n"
         f"Prefix:\n{preview.rendered.prefix}\n\n"
         f"Completion:\n{preview.rendered.completion}\n\n"
@@ -154,14 +172,15 @@ def _generate(
     condition: ConditionSpec,
     num_variables: int,
     seed: int,
+    plan_item: AssignmentPlanItem,
 ) -> StateTrackingInstance:
     generation = loaded.spec.generation
     return generate_instance(
         complexity=condition.complexity,
         num_variables=num_variables,
         num_values=condition.num_values,
-        min_extra_assignments=condition.extra_assignments.min,
-        max_extra_assignments=condition.extra_assignments.max,
+        min_extra_assignments=plan_item.min_extra_assignments,
+        max_extra_assignments=plan_item.max_extra_assignments,
         query_mode=generation.query_mode,
         distinct_initial_values=generation.distinct_initial_values,
         require_strict_witness=generation.require_strict_witness,

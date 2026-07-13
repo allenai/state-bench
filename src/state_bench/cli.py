@@ -36,6 +36,11 @@ def build_parser() -> argparse.ArgumentParser:
     sample.add_argument("config_name", nargs="?", help="Config such as integer-code--periodic.")
     sample.add_argument("--seed", type=int, help="Preview seed; defaults to the experiment seed.")
     sample.add_argument("--num-variables", type=int)
+    sample.add_argument(
+        "--extra-assignments",
+        type=int,
+        help="Generate an exact assignment depth instead of sampling the configured schedule.",
+    )
     sample.add_argument("--json", action="store_true", help="Print machine-readable JSON.")
     sample.add_argument("--list-configs", action="store_true", help="List available config names.")
 
@@ -105,6 +110,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             config_name=args.config_name,
             seed=args.seed,
             num_variables=args.num_variables,
+            extra_assignments=args.extra_assignments,
         )
         if args.json:
             print(json.dumps(preview.to_record(), indent=2))

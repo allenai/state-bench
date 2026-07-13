@@ -65,3 +65,16 @@ def test_sample_cli_can_print_json(capsys: pytest.CaptureFixture[str]) -> None:
 def test_unknown_config_reports_available_names() -> None:
     with pytest.raises(ValueError, match="available configs"):
         generate_preview(load_experiment(EXPERIMENT), config_name="missing")
+
+
+def test_preview_can_select_an_exact_long_assignment_depth() -> None:
+    loaded = load_experiment(ROOT / "configs/experiments/long-context.yaml")
+    preview = generate_preview(
+        loaded,
+        config_name="integer-code--periodic",
+        seed=7,
+        num_variables=2,
+        extra_assignments=128,
+    )
+    assert preview.target_extra_assignments == 128
+    assert len(preview.instance.operations) == 130

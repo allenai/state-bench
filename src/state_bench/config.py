@@ -29,11 +29,30 @@ class AssignmentRange(StrictModel):
         return self
 
 
+class LogSpacedAssignmentSchedule(StrictModel):
+    distribution: Literal["log-spaced"]
+    min: int = Field(ge=0)
+    max: int = Field(ge=0)
+    growth_factor: float = Field(default=2.0, gt=1.0)
+    sample_decay: float = Field(default=0.65, gt=0.0, le=1.0)
+    jitter_fraction: float = Field(default=0.0, ge=0.0, lt=1.0)
+    min_samples_per_bucket: int = Field(default=1, ge=0)
+
+    @model_validator(mode="after")
+    def ordered(self) -> LogSpacedAssignmentSchedule:
+        if self.max < self.min:
+            raise ValueError("max must be greater than or equal to min")
+        return self
+
+
+type ExtraAssignmentsSpec = AssignmentRange | LogSpacedAssignmentSchedule
+
+
 class ConditionSpec(StrictModel):
     complexity: Complexity
     num_variables: list[PositiveInt]
     num_values: PositiveInt
-    extra_assignments: AssignmentRange
+    extra_assignments: ExtraAssignmentsSpec
 
     @model_validator(mode="after")
     def nonempty_variables(self) -> ConditionSpec:
@@ -55,15 +74,14 @@ class GenerationSpec(StrictModel):
     def validate_conditions(self) -> GenerationSpec:
         if not self.conditions:
             raise ValueError("conditions must not be empty")
-        seen: set[tuple[Complexity, int, int, int, int]] = set()
+        seen: set[tuple[Complexity, int, int, str]] = set()
         for condition in self.conditions:
             for num_variables in condition.num_variables:
                 key = (
                     condition.complexity,
                     num_variables,
                     condition.num_values,
-                    condition.extra_assignments.min,
-                    condition.extra_assignments.max,
+                    condition.extra_assignments.model_dump_json(),
                 )
                 if key in seen:
                     raise ValueError(f"duplicate condition: {key}")
@@ -283,6 +301,7 @@ class LoadedExperiment:
 def load_experiment(path: str | Path) -> LoadedExperiment:
     experiment_path = Path(path).resolve()
     spec = ExperimentSpec.model_validate(_load_yaml(experiment_path))
+    _validate_schedule_budgets(spec)
     formatters = tuple(
         load_formatter(experiment_path.parent / formatter.config) for formatter in spec.formatters
     )
@@ -339,3 +358,18 @@ def _template_texts(value: TemplateValue) -> tuple[str, ...]:
     if isinstance(value, str):
         return (value,)
     return tuple(choice.text for choice in value.choices)
+
+
+def _validate_schedule_budgets(experiment: ExperimentSpec) -> None:
+    from state_bench.scheduling import allocate_bucket_counts
+
+    for split_name, split in experiment.splits.items():
+        for condition in experiment.generation.conditions:
+            if isinstance(condition.extra_assignments, LogSpacedAssignmentSchedule):
+                try:
+                    allocate_bucket_counts(
+                        condition.extra_assignments,
+                        total_samples=split.samples_per_condition,
+                    )
+                except ValueError as error:
+                    raise ValueError(f"invalid assignment schedule for split {split_name!r}") from error

@@ -117,3 +117,24 @@ def test_mixed_complexities_have_stable_parquet_schema_across_shards(tmp_path: P
     repo_dir = stage_hub_repository(loaded, source_dir=output, repo_dir=tmp_path / "mixed-hub")
     report = validate_hub_repository(repo_dir)
     assert report["counts"]["canonical/train"] == 6
+
+
+def test_log_spaced_schedule_uses_fixed_budget_and_records_bucket(tmp_path: Path) -> None:
+    experiment = _small_experiment(tmp_path)
+    source = yaml.safe_load(experiment.read_text(encoding="utf-8"))
+    source["splits"] = {"train": {"samples_per_condition": 8}}
+    source["generation"]["conditions"][0]["extra_assignments"] = {
+        "distribution": "log-spaced",
+        "min": 1,
+        "max": 8,
+        "growth_factor": 2,
+        "sample_decay": 0.5,
+        "jitter_fraction": 0,
+        "min_samples_per_bucket": 1,
+    }
+    experiment.write_text(yaml.safe_dump(source, sort_keys=False), encoding="utf-8")
+    output = build_dataset(load_experiment(experiment))
+    rows = read_jsonl(output / "canonical/train.jsonl")
+    assert len(rows) == 8
+    assert {row["target_extra_assignments"] for row in rows} == {1, 2, 4, 8}
+    assert all(row["num_extra_assignments"] == row["target_extra_assignments"] for row in rows)

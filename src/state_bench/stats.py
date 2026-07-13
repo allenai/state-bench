@@ -13,7 +13,12 @@ from pathlib import Path
 from typing import Any, Protocol, cast
 
 DEFAULT_TOKENIZER = "allenai/Olmo-3-1025-7B"
-DEFAULT_GROUP_FIELDS = ("formatter", "complexity", "num_variables")
+DEFAULT_GROUP_FIELDS = (
+    "formatter",
+    "complexity",
+    "num_variables",
+    "target_extra_assignments",
+)
 
 
 class TokenizerLike(Protocol):
@@ -122,7 +127,11 @@ def analyze_records(
         lambda: defaultdict(list)
     )
     field_counts = {field: Counter() for field in DEFAULT_GROUP_FIELDS}
-    assignment_counts: list[int] = []
+    numeric_fields: dict[str, list[int]] = {
+        "num_assignments": [],
+        "num_extra_assignments": [],
+        "target_extra_assignments": [],
+    }
     row_count = 0
 
     for record_batch in batched(records, batch_size, strict=False):
@@ -173,10 +182,11 @@ def analyze_records(
             for name, value in row_metrics.items():
                 grouped_metrics[group_key][name].append(value)
             for field in DEFAULT_GROUP_FIELDS:
-                if field in record:
+                if field in record and record[field] is not None:
                     field_counts[field][str(record[field])] += 1
-            if "num_assignments" in record:
-                assignment_counts.append(int(record["num_assignments"]))
+            for field in numeric_fields:
+                if field in record and record[field] is not None:
+                    numeric_fields[field].append(int(record[field]))
 
         for length in choice_lengths:
             metrics["choice_tokens"].append(length)
@@ -201,10 +211,11 @@ def analyze_records(
         "field_counts": {
             field: dict(sorted(counts.items())) for field, counts in field_counts.items() if counts
         },
-        "num_assignments": summarize_distribution(
-            assignment_counts,
-            histogram_bin_width=histogram_bin_width,
-        ),
+        "assignment_distributions": {
+            field: summarize_distribution(values, histogram_bin_width=histogram_bin_width)
+            for field, values in numeric_fields.items()
+            if values
+        },
         "token_distributions": {
             name: summarize_distribution(values, histogram_bin_width=histogram_bin_width)
             for name, values in sorted(metrics.items())
@@ -287,8 +298,9 @@ def format_report(report: dict[str, Any]) -> str:
     for field, counts in report["field_counts"].items():
         lines.extend(("", f"{field} distribution:"))
         lines.extend(f"  {value}: {count}" for value, count in counts.items())
-    lines.extend(("", "num_assignments distribution:"))
-    lines.extend(_format_distribution(report["num_assignments"]))
+    for name, distribution in report["assignment_distributions"].items():
+        lines.extend(("", f"{name} distribution:"))
+        lines.extend(_format_distribution(distribution))
     for name, distribution in report["token_distributions"].items():
         lines.extend(("", f"{name} distribution:"))
         lines.extend(_format_distribution(distribution))

@@ -15,6 +15,7 @@ from state_bench.config import LoadedExperiment
 from state_bench.distractors import generate_incorrect_states
 from state_bench.generation import generate_instance
 from state_bench.rendering import render_instance
+from state_bench.scheduling import build_assignment_plan
 
 
 def build_dataset(loaded: LoadedExperiment, *, output_dir: Path | None = None) -> Path:
@@ -60,7 +61,20 @@ def build_dataset(loaded: LoadedExperiment, *, output_dir: Path | None = None) -
         for split_name, split_spec in spec.splits.items():
             for condition_index, condition in enumerate(spec.generation.conditions):
                 for num_variables in condition.num_variables:
-                    for sample_index in range(split_spec.samples_per_condition):
+                    assignment_plan = build_assignment_plan(
+                        condition.extra_assignments,
+                        total_samples=split_spec.samples_per_condition,
+                        rng=random.Random(
+                            derive_seed(
+                                spec.dataset.seed,
+                                "assignment-plan",
+                                split_name,
+                                str(condition_index),
+                                str(num_variables),
+                            )
+                        ),
+                    )
+                    for sample_index, plan_item in enumerate(assignment_plan):
                         example_id = _example_id(
                             dataset=spec.dataset.name,
                             split=split_name,
@@ -69,21 +83,27 @@ def build_dataset(loaded: LoadedExperiment, *, output_dir: Path | None = None) -
                             num_values=condition.num_values,
                             condition_index=condition_index,
                             sample_index=sample_index,
+                            target_extra_assignments=plan_item.target_extra_assignments,
                         )
                         semantic_seed = derive_seed(spec.dataset.seed, "semantic", example_id)
                         instance = generate_instance(
                             complexity=condition.complexity,
                             num_variables=num_variables,
                             num_values=condition.num_values,
-                            min_extra_assignments=condition.extra_assignments.min,
-                            max_extra_assignments=condition.extra_assignments.max,
+                            min_extra_assignments=plan_item.min_extra_assignments,
+                            max_extra_assignments=plan_item.max_extra_assignments,
                             query_mode=spec.generation.query_mode,
                             distinct_initial_values=spec.generation.distinct_initial_values,
                             require_strict_witness=spec.generation.require_strict_witness,
                             allow_self_reference=spec.generation.allow_self_reference,
                             rng=random.Random(semantic_seed),
                         )
-                        canonical_record = {"example_id": example_id, **instance.to_record()}
+                        canonical_record = {
+                            "example_id": example_id,
+                            **instance.to_record(),
+                            "num_extra_assignments": len(instance.operations) - num_variables,
+                            "target_extra_assignments": plan_item.target_extra_assignments,
+                        }
                         write_json_line(canonical_handles[split_name], canonical_record)
                         counts[f"canonical/{split_name}"] += 1
                         unique_semantics[f"canonical/{split_name}"].add(instance.instance_id)
@@ -116,6 +136,12 @@ def build_dataset(loaded: LoadedExperiment, *, output_dir: Path | None = None) -
                                 shuffle_choices=spec.output.multiple_choice.shuffle_choices,
                             )
                             rendered_record = {"example_id": example_id, **rendered.to_record()}
+                            rendered_record["num_extra_assignments"] = (
+                                len(instance.operations) - num_variables
+                            )
+                            rendered_record["target_extra_assignments"] = (
+                                plan_item.target_extra_assignments
+                            )
                             if spec.output.include_canonical_trace:
                                 rendered_record["operations"] = canonical_record["operations"]
                                 rendered_record["query"] = canonical_record["query"]
@@ -193,11 +219,14 @@ def _example_id(
     num_values: int,
     condition_index: int,
     sample_index: int,
+    target_extra_assignments: int | None,
 ) -> str:
     value = (
         f"{dataset}\0{split}\0{complexity}\0{num_variables}\0{num_values}\0"
         f"{condition_index}\0{sample_index}"
     )
+    if target_extra_assignments is not None:
+        value += f"\0{target_extra_assignments}"
     return hashlib.sha256(value.encode()).hexdigest()[:24]
 
 

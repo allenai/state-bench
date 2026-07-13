@@ -82,6 +82,48 @@ Configuration models are strict and versioned: unknown keys, invalid family
 parameters, insufficient formatter vocabularies, and invalid placeholders fail
 during `config check`.
 
+### Long-context assignment schedules
+
+Use `distribution: log-spaced` to spread a fixed sample budget over
+exponentially increasing assignment depths:
+
+```yaml
+splits:
+  test:
+    samples_per_condition: 6000
+
+generation:
+  conditions:
+    - complexity: periodic
+      num_variables: [2, 4, 6]
+      num_values: 10
+      extra_assignments:
+        distribution: log-spaced
+        min: 1
+        max: 4096
+        growth_factor: 2.0
+        sample_decay: 0.65
+        jitter_fraction: 0.10
+        min_samples_per_bucket: 8
+```
+
+This creates target buckets `1, 2, 4, ..., 4096`. The
+`samples_per_condition` value remains the total budget for each
+complexity/variable-count pair; it is not generated separately at every depth.
+Bucket weights decay by `sample_decay`, and `min_samples_per_bucket` guarantees
+coverage of the longest contexts. `jitter_fraction` samples nearby assignment
+counts rather than putting every row at the exact bucket center.
+
+Rows include `num_extra_assignments` and `target_extra_assignments` metadata.
+R-trivial traces cannot become long through reassignment because each variable
+is assigned exactly once, so the provided long-context experiment focuses on
+aperiodic and periodic traces:
+
+```bash
+uv run state-bench config check configs/experiments/long-context.yaml
+uv run state-bench build configs/experiments/long-context.yaml
+```
+
 ### Formatter YAML
 
 Most surface forms use the built-in template renderer and require no Python:
@@ -148,6 +190,8 @@ uv run state-bench sample \
   --num-variables 4 \
   --seed 7
 ```
+
+For a specific long-context depth, add `--extra-assignments 1024`.
 
 This prints the canonical trace, rendered prefix, and expected completion. Use
 `--json` for machine-readable output, or list available names with:

@@ -157,6 +157,29 @@ def _safe_periodic_operation(
 ) -> Operation:
     """Sample an operation while preserving two distinct live values for the final witness."""
 
+    for _ in range(32):
+        if rng.random() < 0.5:
+            operation: Operation = AssignConstant(
+                target=rng.randrange(len(state)),
+                value=rng.randrange(num_values),
+            )
+        else:
+            target = rng.randrange(len(state))
+            source_choices = [
+                source
+                for source in range(len(state))
+                if allow_self_reference or source != target
+            ]
+            if not source_choices:
+                continue
+            operation = AssignVariable(target=target, source=rng.choice(source_choices))
+        candidate_state = [*state]
+        _apply(operation, candidate_state)
+        if len(set(candidate_state)) >= 2:
+            return operation
+
+    # The rejection loop should succeed quickly. Keep an exhaustive fallback so
+    # tiny or unusual domains still have deterministic, total behavior.
     candidates: list[Operation] = []
     for target in range(len(state)):
         for value in range(num_values):
