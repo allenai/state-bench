@@ -41,12 +41,15 @@ def build_dataset(loaded: LoadedExperiment, *, output_dir: Path | None = None) -
             generated_files.append(path)
 
         for formatter in loaded.formatters:
-            for condition in spec.generation.conditions:
-                config_name = hub_config_name(
+            config_names = {
+                hub_config_name(
                     spec.huggingface.config_naming,
                     formatter=formatter.name,
                     complexity=condition.complexity.value,
                 )
+                for condition in spec.generation.conditions
+            }
+            for config_name in sorted(config_names):
                 for split in spec.splits:
                     path = rendered_dir / config_name / f"{split}.jsonl"
                     path.parent.mkdir(parents=True, exist_ok=True)

@@ -49,3 +49,7 @@ huggingface:
   repository:
     repo_id: null
     private: true
+  card:
+    license: null
+    language: [en]
+    tags: [state-tracking, formal-languages, llm-evaluation]

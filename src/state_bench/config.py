@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 from pathlib import Path
+from string import Formatter, Template
 from typing import Literal
 
 import yaml
@@ -54,10 +55,16 @@ class GenerationSpec(StrictModel):
     def validate_conditions(self) -> GenerationSpec:
         if not self.conditions:
             raise ValueError("conditions must not be empty")
-        seen: set[tuple[Complexity, int, int]] = set()
+        seen: set[tuple[Complexity, int, int, int, int]] = set()
         for condition in self.conditions:
             for num_variables in condition.num_variables:
-                key = (condition.complexity, num_variables, condition.num_values)
+                key = (
+                    condition.complexity,
+                    num_variables,
+                    condition.num_values,
+                    condition.extra_assignments.min,
+                    condition.extra_assignments.max,
+                )
                 if key in seen:
                     raise ValueError(f"duplicate condition: {key}")
                 seen.add(key)
@@ -80,6 +87,12 @@ class GenerationSpec(StrictModel):
                     and (num_variables < 2 or condition.num_values < 2)
                 ):
                     raise ValueError("strict periodic conditions need at least two variables and values")
+                if (
+                    self.require_strict_witness
+                    and condition.complexity is Complexity.APERIODIC
+                    and condition.num_values < 2
+                ):
+                    raise ValueError("strict aperiodic conditions need at least two values")
         return self
 
 
@@ -109,14 +122,28 @@ class HubRepositorySpec(StrictModel):
     private: bool = True
 
 
+class HubCardSpec(StrictModel):
+    license: str | None = None
+    language: list[str] = ["en"]
+    tags: list[str] = ["state-tracking", "formal-languages", "llm-evaluation"]
+
+
 class HuggingFaceSpec(StrictModel):
     include_canonical_config: bool = True
     config_naming: str = "{formatter}--{complexity}"
     data_format: Literal["parquet"] = "parquet"
     repository: HubRepositorySpec = HubRepositorySpec()
+    card: HubCardSpec = HubCardSpec()
 
     @model_validator(mode="after")
     def validate_config_naming(self) -> HuggingFaceSpec:
+        fields = {
+            field_name
+            for _, field_name, _, _ in Formatter().parse(self.config_naming)
+            if field_name is not None
+        }
+        if fields - {"formatter", "complexity"}:
+            raise ValueError("config_naming may only interpolate formatter and complexity")
         try:
             rendered = self.config_naming.format(formatter="format", complexity="complexity")
         except (KeyError, ValueError) as error:
@@ -197,6 +224,12 @@ class LayoutSpec(StrictModel):
     completion_separator: str = " "
     trailing_newline: bool = False
 
+    @model_validator(mode="after")
+    def unique_blocks(self) -> LayoutSpec:
+        if len(set(self.prompt_blocks)) != len(self.prompt_blocks):
+            raise ValueError("prompt_blocks must not contain duplicates")
+        return self
+
 
 class FormatterSpec(StrictModel):
     schema_version: Literal[1]
@@ -205,6 +238,28 @@ class FormatterSpec(StrictModel):
     vocabulary: VocabularySpec
     templates: TemplatesSpec
     layout: LayoutSpec = LayoutSpec()
+
+    @model_validator(mode="after")
+    def validate_templates(self) -> FormatterSpec:
+        metadata = {"num_variables", "num_values", "num_assignments", "complexity"}
+        template_fields = {
+            "task_description": (self.templates.task_description, metadata),
+            "assign_constant": (self.templates.assign_constant, metadata | {"target", "value"}),
+            "assign_reference": (self.templates.assign_reference, metadata | {"target", "source"}),
+            "answer_prompt": (self.templates.answer_prompt, metadata),
+            "state_assertion": (self.templates.state_assertion, metadata | {"variable", "value"}),
+        }
+        for field_name, (value, allowed) in template_fields.items():
+            if value is None:
+                continue
+            for text in _template_texts(value):
+                template = Template(text)
+                if not template.is_valid():
+                    raise ValueError(f"invalid template syntax in {field_name}")
+                unknown = set(template.get_identifiers()) - allowed
+                if unknown:
+                    raise ValueError(f"unknown placeholders in {field_name}: {sorted(unknown)}")
+        return self
 
     @property
     def config_hash(self) -> str:
@@ -259,3 +314,9 @@ def _validate_formatter_capacity(
             raise ValueError(f"formatter {formatter.name!r} does not define {max_variables} variables")
         if len(formatter.vocabulary.values) < max_values:
             raise ValueError(f"formatter {formatter.name!r} does not define {max_values} values")
+
+
+def _template_texts(value: TemplateValue) -> tuple[str, ...]:
+    if isinstance(value, str):
+        return (value,)
+    return tuple(choice.text for choice in value.choices)

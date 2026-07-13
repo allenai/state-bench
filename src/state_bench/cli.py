@@ -42,7 +42,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     push = hub_commands.add_parser("push", help="Explicitly upload a staged repository.")
     push.add_argument("repo_dir", type=Path)
-    push.add_argument("--repo-id", required=True)
+    push.add_argument("--repo-id")
     visibility = push.add_mutually_exclusive_group()
     visibility.add_argument("--public", action="store_true")
     visibility.add_argument("--private", action="store_true")
@@ -82,10 +82,20 @@ def main(argv: Sequence[str] | None = None) -> int:
         return 0
 
     if args.command == "hub" and args.hub_command == "push":
-        private = not args.public
+        manifest = json.loads((args.repo_dir / "manifest.json").read_text(encoding="utf-8"))
+        repository = manifest["huggingface"]["repository"]
+        repo_id = args.repo_id or repository["repo_id"]
+        if repo_id is None:
+            raise ValueError("repo_id is required in YAML or via --repo-id")
+        if args.public:
+            private = False
+        elif args.private:
+            private = True
+        else:
+            private = bool(repository["private"])
         plan = push_hub_repository(
             args.repo_dir,
-            repo_id=args.repo_id,
+            repo_id=repo_id,
             private=private,
             dry_run=args.dry_run,
             commit_message=args.commit_message,

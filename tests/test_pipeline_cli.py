@@ -3,8 +3,8 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import pytest
 import yaml
-import pyarrow.parquet as parquet
 
 from state_bench.cli import main
 from state_bench.config import load_experiment
@@ -22,6 +22,7 @@ def _small_experiment(tmp_path: Path) -> Path:
     source = yaml.safe_load((ROOT / "configs/experiments/default.yaml").read_text(encoding="utf-8"))
     source["dataset"]["output_dir"] = str(tmp_path / "output")
     source["splits"] = {"train": {"samples_per_condition": 2}, "test": {"samples_per_condition": 1}}
+    source["output"]["shard_size"] = 1
     source["generation"]["conditions"] = [
         {
             "complexity": "periodic",
@@ -71,6 +72,7 @@ def test_hub_push_dry_run_needs_no_optional_dependencies(tmp_path: Path) -> None
 
 
 def test_stage_and_validate_hub_repository(tmp_path: Path) -> None:
+    parquet = pytest.importorskip("pyarrow.parquet")
     experiment = _small_experiment(tmp_path)
     loaded = load_experiment(experiment)
     output = build_dataset(loaded)
@@ -80,10 +82,32 @@ def test_stage_and_validate_hub_repository(tmp_path: Path) -> None:
         repo_dir=tmp_path / "hub",
     )
     report = validate_hub_repository(repo_dir)
-    assert report["files"] == 6
+    assert report["files"] == 9
     assert report["counts"]["canonical/train"] == 2
     assert "configs:" in (repo_dir / "README.md").read_text(encoding="utf-8")
     canonical_rows = parquet.read_table(
-        repo_dir / "data/canonical/train-00000-of-00001.parquet"
+        repo_dir / "data/canonical/train-00000-of-00002.parquet"
     ).to_pylist()
     assert canonical_rows[0]["operations"][-1]["source"] is not None
+
+
+def test_mixed_complexities_have_stable_parquet_schema_across_shards(tmp_path: Path) -> None:
+    pytest.importorskip("pyarrow.parquet")
+    experiment = _small_experiment(tmp_path)
+    source = yaml.safe_load(experiment.read_text(encoding="utf-8"))
+    source["generation"]["conditions"] = [
+        {
+            "complexity": complexity,
+            "num_variables": [2],
+            "num_values": 10,
+            "extra_assignments": {"min": 0 if complexity == "r-trivial" else 1, "max": 1},
+        }
+        for complexity in ("r-trivial", "aperiodic", "periodic")
+    ]
+    source["generation"]["conditions"][0]["extra_assignments"]["max"] = 0
+    experiment.write_text(yaml.safe_dump(source, sort_keys=False), encoding="utf-8")
+    loaded = load_experiment(experiment)
+    output = build_dataset(loaded)
+    repo_dir = stage_hub_repository(loaded, source_dir=output, repo_dir=tmp_path / "mixed-hub")
+    report = validate_hub_repository(repo_dir)
+    assert report["counts"]["canonical/train"] == 6

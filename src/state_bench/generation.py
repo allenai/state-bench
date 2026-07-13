@@ -56,10 +56,17 @@ def generate_instance(
 
     extra_count = rng.randint(min_extra_assignments, max_extra_assignments)
     if complexity is Complexity.APERIODIC:
-        for _ in range(extra_count):
+        non_witness_count = extra_count - 1 if require_strict_witness else extra_count
+        for _ in range(non_witness_count):
             operation = AssignConstant(target=rng.randrange(num_variables), value=rng.randrange(num_values))
             operations.append(operation)
             state[operation.target] = operation.value
+        if require_strict_witness:
+            target = rng.randrange(num_variables)
+            value = rng.choice([value for value in range(num_values) if value != state[target]])
+            witness = AssignConstant(target=target, value=value)
+            operations.append(witness)
+            _apply(witness, state)
     elif complexity is Complexity.PERIODIC:
         non_witness_count = extra_count - 1 if require_strict_witness else extra_count
         for _ in range(non_witness_count):
@@ -116,6 +123,8 @@ def _validate_parameters(
         raise ValueError("r-trivial instances cannot have extra assignments")
     if complexity is Complexity.APERIODIC and require_strict_witness and min_extra_assignments < 1:
         raise ValueError("strict aperiodic instances require at least one extra assignment")
+    if complexity is Complexity.APERIODIC and require_strict_witness and num_values < 2:
+        raise ValueError("strict aperiodic instances require at least two values")
     if complexity is Complexity.PERIODIC and require_strict_witness:
         if min_extra_assignments < 1:
             raise ValueError("strict periodic instances require at least one extra assignment")

@@ -29,16 +29,33 @@ def stage_hub_repository(
 
     configs: list[dict[str, Any]] = []
     if loaded.spec.huggingface.include_canonical_config:
-        configs.append(_stage_config(source_dir / "canonical", data_dir, "canonical"))
+        configs.append(
+            _stage_config(
+                source_dir / "canonical",
+                data_dir,
+                "canonical",
+                shard_size=loaded.spec.output.shard_size,
+            )
+        )
     for config_dir in sorted((source_dir / "rendered").iterdir()):
         if config_dir.is_dir():
-            configs.append(_stage_config(config_dir, data_dir, config_dir.name))
+            configs.append(
+                _stage_config(
+                    config_dir,
+                    data_dir,
+                    config_dir.name,
+                    shard_size=loaded.spec.output.shard_size,
+                )
+            )
 
-    metadata = {
+    metadata: dict[str, Any] = {
         "pretty_name": loaded.spec.dataset.name,
-        "tags": ["state-tracking", "formal-languages", "llm-evaluation"],
+        "language": loaded.spec.huggingface.card.language,
+        "tags": loaded.spec.huggingface.card.tags,
         "configs": configs,
     }
+    if loaded.spec.huggingface.card.license is not None:
+        metadata["license"] = loaded.spec.huggingface.card.license
     readme = _dataset_card(metadata=metadata, loaded=loaded)
     (repo_dir / "README.md").write_text(readme, encoding="utf-8")
     (repo_dir / "generation.yaml").write_text(loaded.path.read_text(encoding="utf-8"), encoding="utf-8")
@@ -74,6 +91,11 @@ def validate_hub_repository(repo_dir: Path) -> dict[str, Any]:
     missing = [str(path) for path in required if not path.is_file()]
     if missing:
         raise FileNotFoundError(f"missing staged Hub files: {missing}")
+    manifest = json.loads((repo_dir / "manifest.json").read_text(encoding="utf-8"))
+    for relative_path, expected_hash in manifest.get("hub_files", {}).items():
+        path = repo_dir / relative_path
+        if not path.is_file() or sha256_file(path) != expected_hash:
+            raise ValueError(f"staged file does not match manifest: {relative_path}")
 
     parquet_files = sorted((repo_dir / "data").glob("*/*.parquet"))
     if not parquet_files:
@@ -92,8 +114,11 @@ def validate_hub_repository(repo_dir: Path) -> dict[str, Any]:
         example_ids = {str(record["example_id"]) for record in records}
         if len(example_ids) != len(records):
             raise ValueError(f"duplicate example_id values in {path}")
-        counts[f"{config_name}/{split}"] = len(records)
-        examples_by_config_split[key] = example_ids
+        if example_ids & examples_by_config_split.get(key, set()):
+            raise ValueError(f"duplicate example_id values across shards for {config_name}/{split}")
+        count_key = f"{config_name}/{split}"
+        counts[count_key] = counts.get(count_key, 0) + len(records)
+        examples_by_config_split.setdefault(key, set()).update(example_ids)
         semantics_by_split[split].update(str(record["instance_id"]) for record in records)
         if config_name in schemas and schemas[config_name] != table.schema:
             raise ValueError(f"schema mismatch across splits for config {config_name!r}")
@@ -157,7 +182,13 @@ def push_hub_repository(
     return plan
 
 
-def _stage_config(source_dir: Path, data_dir: Path, config_name: str) -> dict[str, Any]:
+def _stage_config(
+    source_dir: Path,
+    data_dir: Path,
+    config_name: str,
+    *,
+    shard_size: int,
+) -> dict[str, Any]:
     if not source_dir.is_dir():
         raise FileNotFoundError(f"missing generated config directory: {source_dir}")
     destination = data_dir / config_name
@@ -165,15 +196,25 @@ def _stage_config(source_dir: Path, data_dir: Path, config_name: str) -> dict[st
     data_files: list[dict[str, str]] = []
     for jsonl_path in sorted(source_dir.glob("*.jsonl")):
         split = jsonl_path.stem
-        parquet_name = f"{split}-00000-of-00001.parquet"
-        _jsonl_to_parquet(jsonl_path, destination / parquet_name)
-        data_files.append({"split": split, "path": f"data/{config_name}/{parquet_name}"})
+        _jsonl_to_parquet_shards(
+            jsonl_path,
+            destination,
+            split=split,
+            shard_size=shard_size,
+        )
+        data_files.append({"split": split, "path": f"data/{config_name}/{split}-*.parquet"})
     if not data_files:
         raise FileNotFoundError(f"no generated splits found under {source_dir}")
     return {"config_name": config_name, "data_files": data_files}
 
 
-def _jsonl_to_parquet(source: Path, destination: Path) -> None:
+def _jsonl_to_parquet_shards(
+    source: Path,
+    destination: Path,
+    *,
+    split: str,
+    shard_size: int,
+) -> None:
     _require_hub_dependencies()
     import pyarrow as pa
     import pyarrow.parquet as parquet
@@ -181,8 +222,48 @@ def _jsonl_to_parquet(source: Path, destination: Path) -> None:
     records = read_jsonl(source)
     if not records:
         raise ValueError(f"cannot infer a Parquet schema from empty split: {source}")
-    table = pa.Table.from_pylist(records)
-    parquet.write_table(table, destination, compression="zstd")
+    num_shards = (len(records) + shard_size - 1) // shard_size
+    for shard_index in range(num_shards):
+        chunk = records[shard_index * shard_size : (shard_index + 1) * shard_size]
+        table = _arrow_table(pa, chunk)
+        name = f"{split}-{shard_index:05d}-of-{num_shards:05d}.parquet"
+        parquet.write_table(table, destination / name, compression="zstd")
+
+
+def _arrow_table(pa: Any, records: list[dict[str, Any]]) -> Any:
+    normalized = []
+    for record in records:
+        normalized_record = dict(record)
+        if "operations" in record:
+            normalized_record["operations"] = [
+                {
+                    "op": operation["op"],
+                    "target": operation["target"],
+                    "value": operation.get("value"),
+                    "source": operation.get("source"),
+                }
+                for operation in record["operations"]
+            ]
+        normalized.append(normalized_record)
+
+    inferred = pa.Table.from_pylist(normalized)
+    operation_type = pa.list_(
+        pa.struct(
+            [
+                pa.field("op", pa.string(), nullable=False),
+                pa.field("target", pa.int64(), nullable=False),
+                pa.field("value", pa.int64()),
+                pa.field("source", pa.int64()),
+            ]
+        )
+    )
+    schema = pa.schema(
+        [
+            pa.field(field.name, operation_type) if field.name == "operations" else field
+            for field in inferred.schema
+        ]
+    )
+    return pa.Table.from_pylist(normalized, schema=schema)
 
 
 def _dataset_card(*, metadata: dict[str, Any], loaded: LoadedExperiment) -> str:

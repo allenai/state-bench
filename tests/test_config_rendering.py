@@ -85,3 +85,11 @@ def test_unknown_placeholder_is_rejected_at_render_time() -> None:
     )
     with pytest.raises(ValueError, match="unknown template placeholders"):
         render_instance(instance, invalid, rng=random.Random(0))
+
+
+def test_unknown_placeholder_is_rejected_when_parsing_config() -> None:
+    formatter = load_formatter(ROOT / "configs/formats/integer-code.yaml")
+    record = formatter.model_dump()
+    record["templates"]["assign_constant"] = "$unknown"
+    with pytest.raises(ValidationError, match="unknown placeholders"):
+        FormatterSpec.model_validate(record)
