@@ -15,6 +15,7 @@ from state_bench.hub import (
 )
 from state_bench.io import build_dataset
 from state_bench.preview import available_config_names, format_preview, generate_preview
+from state_bench.stats import DEFAULT_TOKENIZER, analyze_path, format_report
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -37,6 +38,18 @@ def build_parser() -> argparse.ArgumentParser:
     sample.add_argument("--num-variables", type=int)
     sample.add_argument("--json", action="store_true", help="Print machine-readable JSON.")
     sample.add_argument("--list-configs", action="store_true", help="List available config names.")
+
+    stats = commands.add_parser("stats", help="Summarize a rendered JSONL or Parquet dataset.")
+    stats.add_argument("dataset", type=Path)
+    stats.add_argument("--tokenizer", default=DEFAULT_TOKENIZER)
+    stats.add_argument("--revision")
+    stats.add_argument("--add-special-tokens", action="store_true")
+    stats.add_argument("--joiner", default="")
+    stats.add_argument("--limit", type=int)
+    stats.add_argument("--batch-size", type=int, default=1024)
+    stats.add_argument("--histogram-bin-width", type=int, default=10)
+    stats.add_argument("--group-by", nargs="*", default=[])
+    stats.add_argument("--json", action="store_true")
 
     hub = commands.add_parser("hub", help="Hugging Face staging and publishing.")
     hub_commands = hub.add_subparsers(dest="hub_command", required=True)
@@ -97,6 +110,21 @@ def main(argv: Sequence[str] | None = None) -> int:
             print(json.dumps(preview.to_record(), indent=2))
         else:
             print(format_preview(preview))
+        return 0
+
+    if args.command == "stats":
+        report = analyze_path(
+            args.dataset,
+            tokenizer_name=args.tokenizer,
+            revision=args.revision,
+            add_special_tokens=args.add_special_tokens,
+            joiner=args.joiner,
+            limit=args.limit,
+            batch_size=args.batch_size,
+            histogram_bin_width=args.histogram_bin_width,
+            group_by=tuple(args.group_by),
+        )
+        print(json.dumps(report, indent=2, sort_keys=True) if args.json else format_report(report))
         return 0
 
     if args.command == "hub" and args.hub_command == "stage":

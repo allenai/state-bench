@@ -25,6 +25,12 @@ Install optional Hugging Face and Parquet support when staging or publishing:
 uv sync --extra hub
 ```
 
+Install tokenizer-based dataset analysis support:
+
+```bash
+uv sync --extra analysis
+```
+
 ## Configuration
 
 An experiment YAML controls semantic generation, splits, selected formatters,
@@ -175,6 +181,50 @@ output:
 
 Distractors are generated from alternative queried states and rendered with the
 same answer template as the correct completion.
+
+### Rendered dataset statistics
+
+Summarize a rendered JSONL file or directory using the OLMo 3 tokenizer:
+
+```bash
+uv run --extra analysis state-bench stats \
+  data/state-tracking-v1/rendered/integer-code--periodic/test.jsonl
+```
+
+The default tokenizer is `allenai/Olmo-3-1025-7B`. Only tokenizer files are
+loaded; model weights are not downloaded. The report includes categorical row
+counts, assignment-count statistics, and token-count distributions for:
+
+- Prefixes
+- Correct completions
+- Prefix plus correct completion
+- Individual multiple-choice options
+- Prefix plus each multiple-choice option
+
+Each distribution reports its count, mean, population standard deviation,
+minimum, maximum, percentiles, and a text histogram. Useful options include:
+
+`prefix_plus_completion_tokens` tokenizes `prefix + joiner + completion` as one
+string so tokens can cross the field boundary. The joiner is empty by default;
+set `--joiner` if the evaluation harness inserts a separator.
+
+```bash
+# Compare groups inside a directory containing several rendered configs.
+uv run --extra analysis state-bench stats data/state-tracking-v1/rendered \
+  --group-by formatter complexity num_variables
+
+# Select another Hugging Face tokenizer and emit machine-readable output.
+uv run --extra analysis state-bench stats path/to/test.parquet \
+  --tokenizer meta-llama/Llama-3.1-8B \
+  --json
+
+# Analyze a sample or count special tokens as well.
+uv run --extra analysis state-bench stats path/to/rendered.jsonl \
+  --limit 1000 \
+  --add-special-tokens
+```
+
+The standalone `state-bench-stats` entry point accepts the same options.
 
 ## Hugging Face
 
