@@ -14,6 +14,7 @@ from state_bench.hub import (
     validate_hub_repository,
 )
 from state_bench.io import build_dataset
+from state_bench.preview import available_config_names, format_preview, generate_preview
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -28,6 +29,14 @@ def build_parser() -> argparse.ArgumentParser:
     build = commands.add_parser("build", help="Generate canonical and rendered JSONL files.")
     build.add_argument("config", type=Path)
     build.add_argument("--output-dir", type=Path)
+
+    sample = commands.add_parser("sample", help="Print one generated sample for a rendered config.")
+    sample.add_argument("config", type=Path, help="Experiment YAML file.")
+    sample.add_argument("config_name", nargs="?", help="Config such as integer-code--periodic.")
+    sample.add_argument("--seed", type=int, help="Preview seed; defaults to the experiment seed.")
+    sample.add_argument("--num-variables", type=int)
+    sample.add_argument("--json", action="store_true", help="Print machine-readable JSON.")
+    sample.add_argument("--list-configs", action="store_true", help="List available config names.")
 
     hub = commands.add_parser("hub", help="Hugging Face staging and publishing.")
     hub_commands = hub.add_subparsers(dest="hub_command", required=True)
@@ -69,6 +78,25 @@ def main(argv: Sequence[str] | None = None) -> int:
     if args.command == "build":
         loaded = load_experiment(args.config)
         print(build_dataset(loaded, output_dir=args.output_dir))
+        return 0
+
+    if args.command == "sample":
+        loaded = load_experiment(args.config)
+        if args.list_configs:
+            print("\n".join(available_config_names(loaded)))
+            return 0
+        if args.config_name is None:
+            raise ValueError("config_name is required unless --list-configs is used")
+        preview = generate_preview(
+            loaded,
+            config_name=args.config_name,
+            seed=args.seed,
+            num_variables=args.num_variables,
+        )
+        if args.json:
+            print(json.dumps(preview.to_record(), indent=2))
+        else:
+            print(format_preview(preview))
         return 0
 
     if args.command == "hub" and args.hub_command == "stage":

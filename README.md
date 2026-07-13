@@ -130,6 +130,23 @@ Generate canonical and rendered JSONL:
 uv run state-bench build configs/experiments/default.yaml
 ```
 
+Preview one generated example without writing a dataset:
+
+```bash
+uv run state-bench sample \
+  configs/experiments/default.yaml \
+  integer-code--periodic \
+  --num-variables 4 \
+  --seed 7
+```
+
+This prints the canonical trace, rendered prefix, and expected completion. Use
+`--json` for machine-readable output, or list available names with:
+
+```bash
+uv run state-bench sample configs/experiments/default.yaml --list-configs
+```
+
 The output contains:
 
 ```text
