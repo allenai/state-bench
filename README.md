@@ -159,6 +159,20 @@ Every row has a unique, generation-stable `example_id`. Its content-derived
 `instance_id` identifies semantic duplicates. The manifest reports unique
 semantic counts and cross-split semantic overlap so dataset leakage is visible.
 
+Rendered rows also contain four unique invalid `incorrect_completions`, a
+shuffled five-item `choices` list, and zero-based `correct_choice_index`.
+Configure these under `output.multiple_choice`:
+
+```yaml
+output:
+  multiple_choice:
+    num_distractors: 4
+    shuffle_choices: true
+```
+
+Distractors are generated from alternative queried states and rendered with the
+same answer template as the correct completion.
+
 ## Hugging Face
 
 Stage a complete local dataset repository containing sharded Parquet files, a

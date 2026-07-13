@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import Any
 
 from state_bench.config import LoadedExperiment
+from state_bench.distractors import generate_incorrect_states
 from state_bench.generation import generate_instance
 from state_bench.rendering import render_instance
 
@@ -100,10 +101,19 @@ def build_dataset(loaded: LoadedExperiment, *, output_dir: Path | None = None) -
                                 example_id,
                                 formatter.name,
                             )
+                            incorrect_states = generate_incorrect_states(
+                                instance,
+                                num_distractors=spec.output.multiple_choice.num_distractors,
+                                rng=random.Random(
+                                    derive_seed(spec.dataset.seed, "distractors", example_id)
+                                ),
+                            )
                             rendered = render_instance(
                                 instance,
                                 formatter,
                                 rng=random.Random(surface_seed),
+                                incorrect_states=incorrect_states,
+                                shuffle_choices=spec.output.multiple_choice.shuffle_choices,
                             )
                             rendered_record = {"example_id": example_id, **rendered.to_record()}
                             if spec.output.include_canonical_trace:

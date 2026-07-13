@@ -111,6 +111,7 @@ def validate_hub_repository(repo_dir: Path) -> dict[str, Any]:
         split = path.name.split("-", 1)[0]
         key = (config_name, split)
         records = table.to_pylist()
+        _validate_multiple_choice_records(records, path)
         example_ids = {str(record["example_id"]) for record in records}
         if len(example_ids) != len(records):
             raise ValueError(f"duplicate example_id values in {path}")
@@ -281,7 +282,8 @@ Synthetic evaluations of state tracking across three algebraic families:
 Available surface formatters: {formatter_names}.
 
 Each rendered record contains `prefix`, `completion`, stable `example_id` and
-semantic `instance_id` fields, its complexity class, and generation parameters.
+semantic `instance_id` fields, four `incorrect_completions`, shuffled `choices`,
+a zero-based `correct_choice_index`, its complexity class, and generation parameters.
 The `canonical` config contains formatter-independent operation traces and final
 states. See `generation.yaml`, `formats/`, and `manifest.json` for exact
 reproduction metadata.
@@ -289,6 +291,21 @@ reproduction metadata.
 Reference assignments use eager copy semantics: assigning one variable from
 another copies its value at that point in the trace and does not create an alias.
 """
+
+
+def _validate_multiple_choice_records(records: list[dict[str, Any]], path: Path) -> None:
+    for record in records:
+        if "choices" not in record:
+            continue
+        choices = record["choices"]
+        incorrect = record["incorrect_completions"]
+        correct_index = record["correct_choice_index"]
+        if len(set(choices)) != len(choices):
+            raise ValueError(f"duplicate multiple-choice options in {path}")
+        if len(set(incorrect)) != len(incorrect) or record["completion"] in incorrect:
+            raise ValueError(f"invalid incorrect completions in {path}")
+        if not 0 <= correct_index < len(choices) or choices[correct_index] != record["completion"]:
+            raise ValueError(f"incorrect answer key in {path}")
 
 
 def _require_hub_dependencies() -> None:

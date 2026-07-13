@@ -110,11 +110,17 @@ class FormatterReference(StrictModel):
     config: Path
 
 
+class MultipleChoiceSpec(StrictModel):
+    num_distractors: int = Field(default=4, ge=0)
+    shuffle_choices: bool = True
+
+
 class OutputSpec(StrictModel):
     local_format: Literal["jsonl"] = "jsonl"
     include_canonical_trace: bool = True
     include_final_state: bool = True
     shard_size: PositiveInt = 100_000
+    multiple_choice: MultipleChoiceSpec = MultipleChoiceSpec()
 
 
 class HubRepositorySpec(StrictModel):
@@ -309,6 +315,19 @@ def _validate_formatter_capacity(
         for num_variables in condition.num_variables
     )
     max_values = max(condition.num_values for condition in experiment.generation.conditions)
+    num_distractors = experiment.output.multiple_choice.num_distractors
+    for condition in experiment.generation.conditions:
+        for num_variables in condition.num_variables:
+            queried_variables = (
+                num_variables if experiment.generation.query_mode is QueryMode.ALL else 1
+            )
+            available_wrong_answers = condition.num_values**queried_variables - 1
+            if available_wrong_answers < num_distractors:
+                raise ValueError(
+                    f"condition {condition.complexity.value}/{num_variables} variables has only "
+                    f"{available_wrong_answers} distinct wrong answers, fewer than the requested "
+                    f"{num_distractors}"
+                )
     for formatter in formatters:
         if len(formatter.vocabulary.variables) < max_variables:
             raise ValueError(f"formatter {formatter.name!r} does not define {max_variables} variables")

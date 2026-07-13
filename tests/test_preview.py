@@ -31,6 +31,9 @@ def test_preview_is_deterministic_and_uses_requested_config() -> None:
     assert first.rendered.formatter == "integer-code"
     assert first.instance.complexity.value == "periodic"
     assert first.instance.num_variables == 4
+    assert len(first.rendered.incorrect_completions) == 4
+    assert len(first.rendered.choices) == 5
+    assert first.rendered.choices[first.rendered.correct_choice_index] == first.rendered.completion
 
 
 def test_available_config_names_cover_each_formatter_and_complexity() -> None:

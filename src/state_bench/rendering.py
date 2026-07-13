@@ -22,6 +22,9 @@ class RenderedExample:
     num_variables: int
     num_values: int
     num_assignments: int
+    incorrect_completions: tuple[str, ...]
+    choices: tuple[str, ...]
+    correct_choice_index: int
 
     def to_record(self) -> dict[str, Any]:
         return {
@@ -34,6 +37,9 @@ class RenderedExample:
             "num_variables": self.num_variables,
             "num_values": self.num_values,
             "num_assignments": self.num_assignments,
+            "incorrect_completions": list(self.incorrect_completions),
+            "choices": list(self.choices),
+            "correct_choice_index": self.correct_choice_index,
         }
 
 
@@ -42,6 +48,8 @@ def render_instance(
     formatter: FormatterSpec,
     *,
     rng: random.Random,
+    incorrect_states: tuple[tuple[int, ...], ...] = (),
+    shuffle_choices: bool = True,
 ) -> RenderedExample:
     """Render an instance without recomputing or changing its semantics."""
 
@@ -88,20 +96,32 @@ def render_instance(
     )
 
     assertion_template = _choose(formatter.templates.state_assertion, rng)
-    assertions = [
-        _substitute(
-            assertion_template,
-            allowed={"variable", "value", *metadata},
-            variable=formatter.vocabulary.variables[variable],
-            value=formatter.vocabulary.values[instance.final_state[variable]],
-            **metadata,
+    completion = _render_completion(
+        instance=instance,
+        state=instance.final_state,
+        formatter=formatter,
+        assertion_template=assertion_template,
+        metadata=metadata,
+    )
+    incorrect_completions = tuple(
+        _render_completion(
+            instance=instance,
+            state=state,
+            formatter=formatter,
+            assertion_template=assertion_template,
+            metadata=metadata,
         )
-        for variable in instance.query
-    ]
-    completion = formatter.layout.completion_separator.join(assertions)
+        for state in incorrect_states
+    )
+    choices = [completion, *incorrect_completions]
+    if shuffle_choices:
+        rng.shuffle(choices)
+    correct_choice_index = choices.index(completion)
     if formatter.layout.trailing_newline:
         prefix += "\n"
         completion += "\n"
+        incorrect_completions = tuple(value + "\n" for value in incorrect_completions)
+        choices = [value + "\n" for value in choices]
 
     return RenderedExample(
         instance_id=instance.instance_id,
@@ -113,6 +133,9 @@ def render_instance(
         num_variables=instance.num_variables,
         num_values=instance.num_values,
         num_assignments=len(instance.operations),
+        incorrect_completions=incorrect_completions,
+        choices=tuple(choices),
+        correct_choice_index=correct_choice_index,
     )
 
 
@@ -157,3 +180,24 @@ def _validate_capacity(instance: StateTrackingInstance, formatter: FormatterSpec
         raise ValueError(f"formatter {formatter.name!r} has too few variables")
     if len(formatter.vocabulary.values) < instance.num_values:
         raise ValueError(f"formatter {formatter.name!r} has too few values")
+
+
+def _render_completion(
+    *,
+    instance: StateTrackingInstance,
+    state: tuple[int, ...],
+    formatter: FormatterSpec,
+    assertion_template: str,
+    metadata: dict[str, str],
+) -> str:
+    assertions = [
+        _substitute(
+            assertion_template,
+            allowed={"variable", "value", *metadata},
+            variable=formatter.vocabulary.variables[variable],
+            value=formatter.vocabulary.values[state[variable]],
+            **metadata,
+        )
+        for variable in instance.query
+    ]
+    return formatter.layout.completion_separator.join(assertions)

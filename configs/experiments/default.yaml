@@ -41,6 +41,9 @@ output:
   include_canonical_trace: true
   include_final_state: true
   shard_size: 100000
+  multiple_choice:
+    num_distractors: 4
+    shuffle_choices: true
 
 huggingface:
   include_canonical_config: true

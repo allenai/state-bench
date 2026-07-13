@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from state_bench.config import ConditionSpec, FormatterSpec, LoadedExperiment
+from state_bench.distractors import generate_incorrect_states
 from state_bench.generation import generate_instance
 from state_bench.io import derive_seed, hub_config_name
 from state_bench.model import StateTrackingInstance
@@ -78,10 +79,17 @@ def generate_preview(
         num_variables=selected_num_variables,
         seed=derive_seed(resolved_seed, "preview", config_name, "semantic"),
     )
+    incorrect_states = generate_incorrect_states(
+        instance,
+        num_distractors=loaded.spec.output.multiple_choice.num_distractors,
+        rng=random.Random(derive_seed(resolved_seed, "preview", config_name, "distractors")),
+    )
     rendered = render_instance(
         instance,
         formatter,
         rng=random.Random(derive_seed(resolved_seed, "preview", config_name, "surface")),
+        incorrect_states=incorrect_states,
+        shuffle_choices=loaded.spec.output.multiple_choice.shuffle_choices,
     )
     return SamplePreview(
         config_name=config_name,
@@ -98,6 +106,9 @@ def format_preview(preview: SamplePreview) -> str:
         f"  {index + 1}. {operation}"
         for index, operation in enumerate(_canonical_operations(preview.instance))
     )
+    choices = "\n".join(
+        f"  {index}. {choice}" for index, choice in enumerate(preview.rendered.choices)
+    )
     return (
         f"Config: {preview.config_name}\n"
         f"Seed: {preview.seed}\n"
@@ -106,7 +117,9 @@ def format_preview(preview: SamplePreview) -> str:
         f"Assignments: {len(preview.instance.operations)}\n\n"
         f"Canonical trace:\n{operations}\n\n"
         f"Prefix:\n{preview.rendered.prefix}\n\n"
-        f"Completion:\n{preview.rendered.completion}"
+        f"Completion:\n{preview.rendered.completion}\n\n"
+        f"Multiple-choice options:\n{choices}\n"
+        f"Correct choice index: {preview.rendered.correct_choice_index}"
     )
 
 
