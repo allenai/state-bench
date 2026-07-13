@@ -1,0 +1,22 @@
+schema_version: 1
+name: integer-code
+renderer: template
+
+vocabulary:
+  variables: [a, b, c, d, e, f]
+  values: ["1", "2", "3", "4", "5", "6", "7", "8", "9", "10"]
+
+templates:
+  task_description: >-
+    Track the current value of each variable after executing the assignments.
+  assign_constant: "$target <- $value;"
+  assign_reference: "$target <- $source;"
+  answer_prompt: null
+  state_assertion: "$variable ?= $value;"
+
+layout:
+  prompt_blocks: [task_description, program, answer_prompt]
+  block_separator: "\n\n"
+  instruction_separator: " "
+  completion_separator: " "
+  trailing_newline: false

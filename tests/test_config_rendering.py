@@ -1,0 +1,87 @@
+from __future__ import annotations
+
+import random
+from pathlib import Path
+
+import pytest
+from pydantic import ValidationError
+
+from state_bench.config import FormatterSpec, load_experiment, load_formatter
+from state_bench.model import AssignConstant, AssignVariable, Complexity, StateTrackingInstance
+from state_bench.rendering import render_instance
+
+ROOT = Path(__file__).resolve().parents[1]
+
+
+def test_default_experiment_loads_and_validates_capacities() -> None:
+    loaded = load_experiment(ROOT / "configs/experiments/default.yaml")
+    assert loaded.spec.schema_version == 1
+    assert [formatter.name for formatter in loaded.formatters] == ["integer-code", "cube-painting"]
+
+
+def test_integer_code_golden_render() -> None:
+    instance = StateTrackingInstance.create(
+        complexity=Complexity.PERIODIC,
+        num_variables=2,
+        num_values=2,
+        operations=(AssignConstant(0, 0), AssignConstant(1, 1), AssignVariable(0, 1)),
+        query=(0, 1),
+        final_state=(1, 1),
+    )
+    formatter = load_formatter(ROOT / "configs/formats/integer-code.yaml")
+    rendered = render_instance(instance, formatter, rng=random.Random(0))
+    assert rendered.prefix == (
+        "Track the current value of each variable after executing the assignments.\n\n"
+        "a <- 1; b <- 2; a <- b;"
+    )
+    assert rendered.completion == "a ?= 2; b ?= 2;"
+
+
+def test_cube_golden_render() -> None:
+    instance = StateTrackingInstance.create(
+        complexity=Complexity.PERIODIC,
+        num_variables=2,
+        num_values=2,
+        operations=(AssignConstant(0, 0), AssignConstant(1, 1), AssignVariable(0, 1)),
+        query=(0, 1),
+        final_state=(1, 1),
+    )
+    formatter = load_formatter(ROOT / "configs/formats/cube-painting.yaml")
+    rendered = render_instance(instance, formatter, rng=random.Random(0))
+    assert "Paint cube 1 the same color as cube 2." in rendered.prefix
+    assert rendered.completion == "cube 1 is orange. cube 2 is orange."
+
+
+def test_unknown_formatter_field_is_rejected() -> None:
+    with pytest.raises(ValidationError, match="extra_forbidden"):
+        FormatterSpec.model_validate(
+            {
+                "schema_version": 1,
+                "name": "bad",
+                "renderer": "template",
+                "vocabulary": {"variables": ["a"], "values": ["1"]},
+                "templates": {
+                    "assign_constant": "$target=$value",
+                    "assign_reference": "$target=$source",
+                    "state_assertion": "$variable=$value",
+                },
+                "unknown": True,
+            }
+        )
+
+
+def test_unknown_placeholder_is_rejected_at_render_time() -> None:
+    formatter = load_formatter(ROOT / "configs/formats/integer-code.yaml")
+    invalid = formatter.model_copy(
+        update={"templates": formatter.templates.model_copy(update={"assign_constant": "$mystery"})}
+    )
+    instance = StateTrackingInstance.create(
+        complexity=Complexity.R_TRIVIAL,
+        num_variables=1,
+        num_values=1,
+        operations=(AssignConstant(0, 0),),
+        query=(0,),
+        final_state=(0,),
+    )
+    with pytest.raises(ValueError, match="unknown template placeholders"):
+        render_instance(instance, invalid, rng=random.Random(0))

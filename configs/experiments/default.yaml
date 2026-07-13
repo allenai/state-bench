@@ -1,0 +1,51 @@
+schema_version: 1
+
+dataset:
+  name: state-tracking-v1
+  seed: 13
+  output_dir: ../../data/state-tracking-v1
+
+splits:
+  train:
+    samples_per_condition: 10000
+  validation:
+    samples_per_condition: 1000
+  test:
+    samples_per_condition: 2000
+
+generation:
+  query_mode: all
+  require_strict_witness: true
+  allow_self_reference: false
+  distinct_initial_values: false
+  conditions:
+    - complexity: r-trivial
+      num_variables: [2, 4, 6]
+      num_values: 10
+      extra_assignments: {min: 0, max: 0}
+    - complexity: aperiodic
+      num_variables: [2, 4, 6]
+      num_values: 10
+      extra_assignments: {min: 1, max: 20}
+    - complexity: periodic
+      num_variables: [2, 4, 6]
+      num_values: 10
+      extra_assignments: {min: 1, max: 20}
+
+formatters:
+  - config: ../formats/integer-code.yaml
+  - config: ../formats/cube-painting.yaml
+
+output:
+  local_format: jsonl
+  include_canonical_trace: true
+  include_final_state: true
+  shard_size: 100000
+
+huggingface:
+  include_canonical_config: true
+  config_naming: "{formatter}--{complexity}"
+  data_format: parquet
+  repository:
+    repo_id: null
+    private: true

@@ -1,0 +1,22 @@
+schema_version: 1
+name: cube-painting
+renderer: template
+
+vocabulary:
+  variables: [cube 1, cube 2, cube 3, cube 4, cube 5, cube 6]
+  values: [red, orange, yellow, green, blue, purple, pink, teal, brown, gray]
+
+templates:
+  task_description: >-
+    Determine the final color of every cube after following the instructions.
+  assign_constant: "Paint $target $value."
+  assign_reference: "Paint $target the same color as $source."
+  answer_prompt: "Final colors:"
+  state_assertion: "$variable is $value."
+
+layout:
+  prompt_blocks: [task_description, program, answer_prompt]
+  block_separator: "\n\n"
+  instruction_separator: " "
+  completion_separator: " "
+  trailing_newline: false
