@@ -16,7 +16,13 @@ ROOT = Path(__file__).resolve().parents[1]
 def test_default_experiment_loads_and_validates_capacities() -> None:
     loaded = load_experiment(ROOT / "configs/experiments/default.yaml")
     assert loaded.spec.schema_version == 1
-    assert [formatter.name for formatter in loaded.formatters] == ["integer-code", "cube-painting"]
+    assert [formatter.name for formatter in loaded.formatters] == [
+        "integer-code",
+        "cube-painting",
+        "spreadsheet-cells",
+        "status-lights",
+        "people-in-rooms",
+    ]
 
 
 def test_integer_code_golden_render() -> None:
@@ -50,6 +56,45 @@ def test_cube_golden_render() -> None:
     rendered = render_instance(instance, formatter, rng=random.Random(0))
     assert "Paint cube 1 the same color as cube 2." in rendered.prefix
     assert rendered.completion == "cube 1 is orange. cube 2 is orange."
+
+
+@pytest.mark.parametrize(
+    ("formatter_name", "reference_text", "completion"),
+    [
+        (
+            "spreadsheet-cells",
+            "Copy the current contents of cell B1 into cell A1.",
+            "cell A1 contains 2. cell B1 contains 2.",
+        ),
+        (
+            "status-lights",
+            "Set light A to the color currently displayed by light B.",
+            "light A displays orange. light B displays orange.",
+        ),
+        (
+            "people-in-rooms",
+            "Alice moves to Bob's current location.",
+            "Alice is in the garden. Bob is in the garden.",
+        ),
+    ],
+)
+def test_additional_natural_language_formatters(
+    formatter_name: str,
+    reference_text: str,
+    completion: str,
+) -> None:
+    instance = StateTrackingInstance.create(
+        complexity=Complexity.PERIODIC,
+        num_variables=2,
+        num_values=2,
+        operations=(AssignConstant(0, 0), AssignConstant(1, 1), AssignVariable(0, 1)),
+        query=(0, 1),
+        final_state=(1, 1),
+    )
+    formatter = load_formatter(ROOT / f"configs/formats/{formatter_name}.yaml")
+    rendered = render_instance(instance, formatter, rng=random.Random(0))
+    assert reference_text in rendered.prefix
+    assert rendered.completion == completion
 
 
 def test_unknown_formatter_field_is_rejected() -> None:

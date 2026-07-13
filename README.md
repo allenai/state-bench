@@ -66,6 +66,9 @@ generation:
 formatters:
   - config: ../formats/integer-code.yaml
   - config: ../formats/cube-painting.yaml
+  - config: ../formats/spreadsheet-cells.yaml
+  - config: ../formats/status-lights.yaml
+  - config: ../formats/people-in-rooms.yaml
 ```
 
 Paths in an experiment are resolved relative to that experiment file.

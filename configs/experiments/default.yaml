@@ -35,6 +35,9 @@ generation:
 formatters:
   - config: ../formats/integer-code.yaml
   - config: ../formats/cube-painting.yaml
+  - config: ../formats/spreadsheet-cells.yaml
+  - config: ../formats/status-lights.yaml
+  - config: ../formats/people-in-rooms.yaml
 
 output:
   local_format: jsonl

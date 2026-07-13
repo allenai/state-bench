@@ -1,0 +1,22 @@
+schema_version: 1
+name: status-lights
+renderer: template
+
+vocabulary:
+  variables: [light A, light B, light C, light D, light E, light F]
+  values: [red, orange, yellow, green, blue, purple, pink, teal, white, gray]
+
+templates:
+  task_description: >-
+    Track the color displayed by each status light after following the instructions.
+  assign_constant: "Set $target to $value."
+  assign_reference: "Set $target to the color currently displayed by $source."
+  answer_prompt: "Final light colors:"
+  state_assertion: "$variable displays $value."
+
+layout:
+  prompt_blocks: [task_description, program, answer_prompt]
+  block_separator: "\n\n"
+  instruction_separator: " "
+  completion_separator: " "
+  trailing_newline: false

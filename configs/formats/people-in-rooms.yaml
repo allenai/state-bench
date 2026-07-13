@@ -1,0 +1,22 @@
+schema_version: 1
+name: people-in-rooms
+renderer: template
+
+vocabulary:
+  variables: [Alice, Bob, Carol, David, Elena, Frank]
+  values: [kitchen, garden, library, office, bedroom, garage, attic, basement, hallway, studio]
+
+templates:
+  task_description: >-
+    Track where each person is after following the movements in order.
+  assign_constant: "$target enters the $value."
+  assign_reference: "$target moves to $source's current location."
+  answer_prompt: "Final locations:"
+  state_assertion: "$variable is in the $value."
+
+layout:
+  prompt_blocks: [task_description, program, answer_prompt]
+  block_separator: "\n\n"
+  instruction_separator: " "
+  completion_separator: " "
+  trailing_newline: false

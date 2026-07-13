@@ -1,0 +1,22 @@
+schema_version: 1
+name: spreadsheet-cells
+renderer: template
+
+vocabulary:
+  variables: [cell A1, cell B1, cell C1, cell D1, cell E1, cell F1]
+  values: ["1", "2", "3", "4", "5", "6", "7", "8", "9", "10"]
+
+templates:
+  task_description: >-
+    Track the contents of each spreadsheet cell after following the instructions.
+  assign_constant: "Enter $value in $target."
+  assign_reference: "Copy the current contents of $source into $target."
+  answer_prompt: "Final cell contents:"
+  state_assertion: "$variable contains $value."
+
+layout:
+  prompt_blocks: [task_description, program, answer_prompt]
+  block_separator: "\n\n"
+  instruction_separator: " "
+  completion_separator: " "
+  trailing_newline: false
