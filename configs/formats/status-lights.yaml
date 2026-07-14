@@ -13,6 +13,9 @@ templates:
   assign_reference: "Set $target to the color currently displayed by $source."
   answer_prompt: "Final light colors:"
   state_assertion: "$variable displays $value."
+  filler_easy: "."
+  filler_medium: "Unrelated maintenance note $filler_index."
+  filler_hard: "Archived note, not an instruction: $variable previously displayed $value."
 
 layout:
   prompt_blocks: [task_description, program, answer_prompt]

@@ -43,6 +43,31 @@ def test_integer_code_golden_render() -> None:
     assert rendered.completion == "a ?= 2; b ?= 2;"
 
 
+def test_filler_lines_hit_requested_ratio_without_changing_program_order() -> None:
+    instance = StateTrackingInstance.create(
+        complexity=Complexity.R_TRIVIAL,
+        num_variables=2,
+        num_values=2,
+        operations=(AssignConstant(0, 0), AssignConstant(1, 1)),
+        query=(0, 1),
+        final_state=(0, 1),
+    )
+    formatter = load_formatter(ROOT / "configs/formats/integer-code.yaml")
+    rendered = render_instance(
+        instance,
+        formatter,
+        rng=random.Random(4),
+        filler_proportion=0.5,
+        filler_distraction="hard",
+    )
+    assert rendered.num_filler_lines == 3
+    assert rendered.actual_filler_proportion == 0.5
+    assert rendered.filler_distraction == "hard"
+    assert rendered.completion == "a ?= 1; b ?= 2;"
+    assert rendered.prefix.index("a <- 1;") < rendered.prefix.index("b <- 2;")
+    assert rendered.prefix.count("// stale log; do not execute:") == 3
+
+
 def test_cube_golden_render() -> None:
     instance = StateTrackingInstance.create(
         complexity=Complexity.PERIODIC,

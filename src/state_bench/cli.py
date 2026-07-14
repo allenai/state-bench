@@ -41,6 +41,8 @@ def build_parser() -> argparse.ArgumentParser:
         type=int,
         help="Generate an exact assignment depth instead of sampling the configured schedule.",
     )
+    sample.add_argument("--filler-proportion", type=float)
+    sample.add_argument("--filler-distraction", choices=("easy", "medium", "hard"))
     sample.add_argument("--json", action="store_true", help="Print machine-readable JSON.")
     sample.add_argument("--list-configs", action="store_true", help="List available config names.")
 
@@ -111,6 +113,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             seed=args.seed,
             num_variables=args.num_variables,
             extra_assignments=args.extra_assignments,
+            filler_proportion=args.filler_proportion,
+            filler_distraction=args.filler_distraction,
         )
         if args.json:
             print(json.dumps(preview.to_record(), indent=2))

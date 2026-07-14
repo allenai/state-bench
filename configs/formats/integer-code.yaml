@@ -13,6 +13,9 @@ templates:
   assign_reference: "$target <- $source;"
   answer_prompt: null
   state_assertion: "$variable ?= $value;"
+  filler_easy: "// ."
+  filler_medium: "// unrelated note $filler_index"
+  filler_hard: "// stale log; do not execute: $variable <- $value;"
 
 layout:
   prompt_blocks: [task_description, program, answer_prompt]

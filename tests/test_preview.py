@@ -78,3 +78,20 @@ def test_preview_can_select_an_exact_long_assignment_depth() -> None:
     )
     assert preview.target_extra_assignments == 128
     assert len(preview.instance.operations) == 130
+
+
+def test_preview_can_select_exact_filler_axes_and_honors_formatter_scope() -> None:
+    loaded = load_experiment(ROOT / "configs/experiments/long-context.yaml")
+    assert "integer-code--r-trivial" in available_config_names(loaded)
+    assert "cube-painting--r-trivial" not in available_config_names(loaded)
+    preview = generate_preview(
+        loaded,
+        config_name="integer-code--r-trivial",
+        seed=7,
+        num_variables=1,
+        filler_proportion=0.99,
+        filler_distraction="medium",
+    )
+    assert preview.rendered.filler_proportion == 0.99
+    assert preview.rendered.filler_distraction == "medium"
+    assert preview.rendered.num_filler_lines == 198

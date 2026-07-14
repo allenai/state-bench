@@ -13,6 +13,9 @@ templates:
   assign_reference: "Copy the current contents of $source into $target."
   answer_prompt: "Final cell contents:"
   state_assertion: "$variable contains $value."
+  filler_easy: "."
+  filler_medium: "Unrelated worksheet note $filler_index."
+  filler_hard: "Archived note, not an edit: $variable previously contained $value."
 
 layout:
   prompt_blocks: [task_description, program, answer_prompt]

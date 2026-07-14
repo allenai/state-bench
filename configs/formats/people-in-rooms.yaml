@@ -13,6 +13,9 @@ templates:
   assign_reference: "$target moves to $source's current location."
   answer_prompt: "Final locations:"
   state_assertion: "$variable is in the $value."
+  filler_easy: "."
+  filler_medium: "Unrelated background note $filler_index."
+  filler_hard: "Archived note, not a movement: $variable was previously in the $value."
 
 layout:
   prompt_blocks: [task_description, program, answer_prompt]

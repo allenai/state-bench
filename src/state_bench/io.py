@@ -11,11 +11,11 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-from state_bench.config import LoadedExperiment
+from state_bench.config import LoadedExperiment, condition_uses_formatter
 from state_bench.distractors import generate_incorrect_states
 from state_bench.generation import generate_instance
 from state_bench.rendering import render_instance
-from state_bench.scheduling import build_assignment_plan
+from state_bench.scheduling import build_assignment_plan, build_filler_plan
 
 
 def build_dataset(loaded: LoadedExperiment, *, output_dir: Path | None = None) -> Path:
@@ -50,6 +50,7 @@ def build_dataset(loaded: LoadedExperiment, *, output_dir: Path | None = None) -
                     complexity=condition.complexity.value,
                 )
                 for condition in spec.generation.conditions
+                if condition_uses_formatter(condition, formatter.name)
             }
             for config_name in sorted(config_names):
                 for split in spec.splits:
@@ -74,7 +75,22 @@ def build_dataset(loaded: LoadedExperiment, *, output_dir: Path | None = None) -
                             )
                         ),
                     )
-                    for sample_index, plan_item in enumerate(assignment_plan):
+                    filler_plan = build_filler_plan(
+                        condition.filler,
+                        total_samples=split_spec.samples_per_condition,
+                        rng=random.Random(
+                            derive_seed(
+                                spec.dataset.seed,
+                                "filler-plan",
+                                split_name,
+                                str(condition_index),
+                                str(num_variables),
+                            )
+                        ),
+                    )
+                    for sample_index, (plan_item, filler_item) in enumerate(
+                        zip(assignment_plan, filler_plan, strict=True)
+                    ):
                         example_id = _example_id(
                             dataset=spec.dataset.name,
                             split=split_name,
@@ -84,6 +100,8 @@ def build_dataset(loaded: LoadedExperiment, *, output_dir: Path | None = None) -
                             condition_index=condition_index,
                             sample_index=sample_index,
                             target_extra_assignments=plan_item.target_extra_assignments,
+                            filler_proportion=filler_item.proportion,
+                            filler_distraction=filler_item.distraction,
                         )
                         semantic_seed = derive_seed(spec.dataset.seed, "semantic", example_id)
                         instance = generate_instance(
@@ -103,6 +121,8 @@ def build_dataset(loaded: LoadedExperiment, *, output_dir: Path | None = None) -
                             **instance.to_record(),
                             "num_extra_assignments": len(instance.operations) - num_variables,
                             "target_extra_assignments": plan_item.target_extra_assignments,
+                            "filler_proportion": filler_item.proportion,
+                            "filler_distraction": filler_item.distraction,
                         }
                         write_json_line(canonical_handles[split_name], canonical_record)
                         counts[f"canonical/{split_name}"] += 1
@@ -110,6 +130,8 @@ def build_dataset(loaded: LoadedExperiment, *, output_dir: Path | None = None) -
                         split_semantics[split_name].add(instance.instance_id)
 
                         for formatter in loaded.formatters:
+                            if not condition_uses_formatter(condition, formatter.name):
+                                continue
                             config_name = hub_config_name(
                                 spec.huggingface.config_naming,
                                 formatter=formatter.name,
@@ -134,6 +156,8 @@ def build_dataset(loaded: LoadedExperiment, *, output_dir: Path | None = None) -
                                 rng=random.Random(surface_seed),
                                 incorrect_states=incorrect_states,
                                 shuffle_choices=spec.output.multiple_choice.shuffle_choices,
+                                filler_proportion=filler_item.proportion,
+                                filler_distraction=filler_item.distraction,
                             )
                             rendered_record = {"example_id": example_id, **rendered.to_record()}
                             rendered_record["num_extra_assignments"] = (
@@ -220,6 +244,8 @@ def _example_id(
     condition_index: int,
     sample_index: int,
     target_extra_assignments: int | None,
+    filler_proportion: float,
+    filler_distraction: str | None,
 ) -> str:
     value = (
         f"{dataset}\0{split}\0{complexity}\0{num_variables}\0{num_values}\0"
@@ -227,6 +253,8 @@ def _example_id(
     )
     if target_extra_assignments is not None:
         value += f"\0{target_extra_assignments}"
+    if filler_proportion != 0 or filler_distraction is not None:
+        value += f"\0{filler_proportion:.17g}\0{filler_distraction or 'none'}"
     return hashlib.sha256(value.encode()).hexdigest()[:24]
 
 

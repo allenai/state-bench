@@ -48,11 +48,37 @@ class LogSpacedAssignmentSchedule(StrictModel):
 type ExtraAssignmentsSpec = AssignmentRange | LogSpacedAssignmentSchedule
 
 
+FillerDistraction = Literal["easy", "medium", "hard"]
+
+
+class FillerSpec(StrictModel):
+    """Surface-only no-op lines varied within a condition's sample budget."""
+
+    proportions: list[float] = [0.0]
+    distraction_levels: list[FillerDistraction] = ["easy"]
+
+    @model_validator(mode="after")
+    def validate_axes(self) -> FillerSpec:
+        if not self.proportions:
+            raise ValueError("filler proportions must not be empty")
+        if not self.distraction_levels:
+            raise ValueError("filler distraction_levels must not be empty")
+        if len(set(self.proportions)) != len(self.proportions):
+            raise ValueError("filler proportions must not contain duplicates")
+        if len(set(self.distraction_levels)) != len(self.distraction_levels):
+            raise ValueError("filler distraction_levels must not contain duplicates")
+        if any(proportion < 0.0 or proportion >= 1.0 for proportion in self.proportions):
+            raise ValueError("filler proportions must satisfy 0 <= proportion < 1")
+        return self
+
+
 class ConditionSpec(StrictModel):
     complexity: Complexity
     num_variables: list[PositiveInt]
     num_values: PositiveInt
     extra_assignments: ExtraAssignmentsSpec
+    filler: FillerSpec = FillerSpec()
+    formatters: list[str] | None = None
 
     @model_validator(mode="after")
     def nonempty_variables(self) -> ConditionSpec:
@@ -60,6 +86,11 @@ class ConditionSpec(StrictModel):
             raise ValueError("num_variables must not be empty")
         if len(set(self.num_variables)) != len(self.num_variables):
             raise ValueError("num_variables must not contain duplicates")
+        if self.formatters is not None:
+            if not self.formatters:
+                raise ValueError("condition formatters must not be empty")
+            if len(set(self.formatters)) != len(self.formatters):
+                raise ValueError("condition formatters must not contain duplicates")
         return self
 
 
@@ -74,7 +105,7 @@ class GenerationSpec(StrictModel):
     def validate_conditions(self) -> GenerationSpec:
         if not self.conditions:
             raise ValueError("conditions must not be empty")
-        seen: set[tuple[Complexity, int, int, str]] = set()
+        seen: set[tuple[Complexity, int, int, str, str, tuple[str, ...] | None]] = set()
         for condition in self.conditions:
             for num_variables in condition.num_variables:
                 key = (
@@ -82,6 +113,8 @@ class GenerationSpec(StrictModel):
                     num_variables,
                     condition.num_values,
                     condition.extra_assignments.model_dump_json(),
+                    condition.filler.model_dump_json(),
+                    tuple(condition.formatters) if condition.formatters is not None else None,
                 )
                 if key in seen:
                     raise ValueError(f"duplicate condition: {key}")
@@ -236,6 +269,9 @@ class TemplatesSpec(StrictModel):
     assign_reference: TemplateValue
     answer_prompt: TemplateValue | None = None
     state_assertion: TemplateValue
+    filler_easy: TemplateValue | None = None
+    filler_medium: TemplateValue | None = None
+    filler_hard: TemplateValue | None = None
 
 
 PromptBlock = Literal["task_description", "program", "answer_prompt"]
@@ -272,6 +308,18 @@ class FormatterSpec(StrictModel):
             "assign_reference": (self.templates.assign_reference, metadata | {"target", "source"}),
             "answer_prompt": (self.templates.answer_prompt, metadata),
             "state_assertion": (self.templates.state_assertion, metadata | {"variable", "value"}),
+            "filler_easy": (
+                self.templates.filler_easy,
+                metadata | {"variable", "value", "filler_index"},
+            ),
+            "filler_medium": (
+                self.templates.filler_medium,
+                metadata | {"variable", "value", "filler_index"},
+            ),
+            "filler_hard": (
+                self.templates.filler_hard,
+                metadata | {"variable", "value", "filler_index"},
+            ),
         }
         for field_name, (value, allowed) in template_fields.items():
             if value is None:
@@ -283,6 +331,8 @@ class FormatterSpec(StrictModel):
                 unknown = set(template.get_identifiers()) - allowed
                 if unknown:
                     raise ValueError(f"unknown placeholders in {field_name}: {sorted(unknown)}")
+                if field_name.startswith("filler_") and (not text.strip() or "\n" in text):
+                    raise ValueError(f"{field_name} templates must contain exactly one nonempty line")
         return self
 
     @property
@@ -308,6 +358,7 @@ def load_experiment(path: str | Path) -> LoadedExperiment:
     names = [formatter.name for formatter in formatters]
     if len(set(names)) != len(names):
         raise ValueError("formatter names must be unique")
+    _validate_condition_formatters(spec, formatters)
     _validate_formatter_capacity(spec, formatters)
     return LoadedExperiment(path=experiment_path, spec=spec, formatters=formatters)
 
@@ -328,12 +379,6 @@ def _validate_formatter_capacity(
     experiment: ExperimentSpec,
     formatters: tuple[FormatterSpec, ...],
 ) -> None:
-    max_variables = max(
-        num_variables
-        for condition in experiment.generation.conditions
-        for num_variables in condition.num_variables
-    )
-    max_values = max(condition.num_values for condition in experiment.generation.conditions)
     num_distractors = experiment.output.multiple_choice.num_distractors
     for condition in experiment.generation.conditions:
         for num_variables in condition.num_variables:
@@ -348,10 +393,59 @@ def _validate_formatter_capacity(
                     f"{num_distractors}"
                 )
     for formatter in formatters:
+        selected_conditions = [
+            condition
+            for condition in experiment.generation.conditions
+            if condition_uses_formatter(condition, formatter.name)
+        ]
+        if not selected_conditions:
+            continue
+        max_variables = max(
+            num_variables
+            for condition in selected_conditions
+            for num_variables in condition.num_variables
+        )
+        max_values = max(condition.num_values for condition in selected_conditions)
         if len(formatter.vocabulary.variables) < max_variables:
             raise ValueError(f"formatter {formatter.name!r} does not define {max_variables} variables")
         if len(formatter.vocabulary.values) < max_values:
             raise ValueError(f"formatter {formatter.name!r} does not define {max_values} values")
+
+
+def _validate_condition_formatters(
+    experiment: ExperimentSpec,
+    formatters: tuple[FormatterSpec, ...],
+) -> None:
+    available = {formatter.name: formatter for formatter in formatters}
+    for condition in experiment.generation.conditions:
+        selected = set(condition.formatters or available)
+        unknown = selected - available.keys()
+        if unknown:
+            raise ValueError(f"condition references unknown formatters: {sorted(unknown)}")
+        if any(proportion > 0 for proportion in condition.filler.proportions):
+            for name in selected:
+                formatter = available[name]
+                for level in condition.filler.distraction_levels:
+                    if getattr(formatter.templates, f"filler_{level}") is None:
+                        raise ValueError(
+                            f"formatter {name!r} has no filler_{level} template required by condition"
+                        )
+
+
+def condition_uses_formatter(condition: ConditionSpec, formatter_name: str) -> bool:
+    return condition.formatters is None or formatter_name in condition.formatters
+
+
+def filler_variants(spec: FillerSpec) -> tuple[tuple[float, FillerDistraction | None], ...]:
+    """Expand axes, collapsing the zero-filler baseline to one distraction-free variant."""
+
+    variants: list[tuple[float, FillerDistraction | None]] = []
+    for proportion in spec.proportions:
+        if proportion == 0:
+            variants.append((proportion, None))
+        else:
+            variants.extend((proportion, level) for level in spec.distraction_levels)
+    return tuple(variants)
 
 
 def _template_texts(value: TemplateValue) -> tuple[str, ...]:
@@ -361,10 +455,20 @@ def _template_texts(value: TemplateValue) -> tuple[str, ...]:
 
 
 def _validate_schedule_budgets(experiment: ExperimentSpec) -> None:
-    from state_bench.scheduling import allocate_bucket_counts
+    import random
+
+    from state_bench.scheduling import allocate_bucket_counts, build_filler_plan
 
     for split_name, split in experiment.splits.items():
         for condition in experiment.generation.conditions:
+            try:
+                build_filler_plan(
+                    condition.filler,
+                    total_samples=split.samples_per_condition,
+                    rng=random.Random(0),
+                )
+            except ValueError as error:
+                raise ValueError(f"invalid filler schedule for split {split_name!r}") from error
             if isinstance(condition.extra_assignments, LogSpacedAssignmentSchedule):
                 try:
                     allocate_bucket_counts(

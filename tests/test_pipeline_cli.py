@@ -138,3 +138,36 @@ def test_log_spaced_schedule_uses_fixed_budget_and_records_bucket(tmp_path: Path
     assert len(rows) == 8
     assert {row["target_extra_assignments"] for row in rows} == {1, 2, 4, 8}
     assert all(row["num_extra_assignments"] == row["target_extra_assignments"] for row in rows)
+
+
+def test_filler_axes_share_budget_and_can_be_scoped_to_one_formatter(tmp_path: Path) -> None:
+    experiment = _small_experiment(tmp_path)
+    source = yaml.safe_load(experiment.read_text(encoding="utf-8"))
+    source["splits"] = {"test": {"samples_per_condition": 8}}
+    source["generation"]["conditions"] = [
+        {
+            "complexity": "r-trivial",
+            "num_variables": [1],
+            "num_values": 10,
+            "extra_assignments": {"min": 0, "max": 0},
+            "filler": {
+                "proportions": [0.0, 0.5],
+                "distraction_levels": ["easy", "medium", "hard"],
+            },
+            "formatters": ["integer-code"],
+        }
+    ]
+    experiment.write_text(yaml.safe_dump(source, sort_keys=False), encoding="utf-8")
+    output = build_dataset(load_experiment(experiment))
+    canonical = read_jsonl(output / "canonical/test.jsonl")
+    rendered = read_jsonl(output / "rendered/integer-code--r-trivial/test.jsonl")
+    assert len(canonical) == len(rendered) == 8
+    assert not (output / "rendered/cube-painting--r-trivial").exists()
+    variants = {(row["filler_proportion"], row["filler_distraction"]) for row in rendered}
+    assert variants == {
+        (0.0, None),
+        (0.5, "easy"),
+        (0.5, "medium"),
+        (0.5, "hard"),
+    }
+    assert all(row["actual_filler_proportion"] == row["filler_proportion"] for row in rendered)

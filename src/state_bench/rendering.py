@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from string import Template
 from typing import Any
 
-from state_bench.config import FormatterSpec, TemplateValue
+from state_bench.config import FillerDistraction, FormatterSpec, TemplateValue
 from state_bench.model import AssignConstant, AssignVariable, StateTrackingInstance
 
 
@@ -25,6 +25,10 @@ class RenderedExample:
     incorrect_completions: tuple[str, ...]
     choices: tuple[str, ...]
     correct_choice_index: int
+    filler_proportion: float
+    actual_filler_proportion: float
+    filler_distraction: str | None
+    num_filler_lines: int
 
     def to_record(self) -> dict[str, Any]:
         return {
@@ -40,6 +44,10 @@ class RenderedExample:
             "incorrect_completions": list(self.incorrect_completions),
             "choices": list(self.choices),
             "correct_choice_index": self.correct_choice_index,
+            "filler_proportion": self.filler_proportion,
+            "actual_filler_proportion": self.actual_filler_proportion,
+            "filler_distraction": self.filler_distraction,
+            "num_filler_lines": self.num_filler_lines,
         }
 
 
@@ -50,6 +58,8 @@ def render_instance(
     rng: random.Random,
     incorrect_states: tuple[tuple[int, ...], ...] = (),
     shuffle_choices: bool = True,
+    filler_proportion: float = 0.0,
+    filler_distraction: FillerDistraction | None = None,
 ) -> RenderedExample:
     """Render an instance without recomputing or changing its semantics."""
 
@@ -86,10 +96,32 @@ def render_instance(
                 )
             )
 
+    task_description = _optional_render(formatter.templates.task_description, metadata, rng)
+    answer_prompt = _optional_render(formatter.templates.answer_prompt, metadata, rng)
+    num_non_filler_lines = (
+        _content_line_count(task_description) + len(instructions) + _content_line_count(answer_prompt)
+    )
+    num_filler_lines = _filler_line_count(
+        proportion=filler_proportion,
+        num_non_filler_lines=num_non_filler_lines,
+    )
+    if num_filler_lines:
+        if filler_distraction is None:
+            raise ValueError("filler_distraction is required when filler_proportion is positive")
+        program = _render_program_with_filler(
+            instructions,
+            formatter=formatter,
+            metadata=metadata,
+            level=filler_distraction,
+            num_filler_lines=num_filler_lines,
+            rng=rng,
+        )
+    else:
+        program = formatter.layout.instruction_separator.join(instructions)
     components = {
-        "task_description": _optional_render(formatter.templates.task_description, metadata, rng),
-        "program": formatter.layout.instruction_separator.join(instructions),
-        "answer_prompt": _optional_render(formatter.templates.answer_prompt, metadata, rng),
+        "task_description": task_description,
+        "program": program,
+        "answer_prompt": answer_prompt,
     }
     prefix = formatter.layout.block_separator.join(
         components[block] for block in formatter.layout.prompt_blocks if components[block]
@@ -136,6 +168,59 @@ def render_instance(
         incorrect_completions=incorrect_completions,
         choices=tuple(choices),
         correct_choice_index=correct_choice_index,
+        filler_proportion=filler_proportion,
+        actual_filler_proportion=(
+            num_filler_lines / (num_non_filler_lines + num_filler_lines)
+            if num_filler_lines
+            else 0.0
+        ),
+        filler_distraction=filler_distraction,
+        num_filler_lines=num_filler_lines,
+    )
+
+
+def _content_line_count(text: str) -> int:
+    return sum(bool(line.strip()) for line in text.splitlines())
+
+
+def _filler_line_count(*, proportion: float, num_non_filler_lines: int) -> int:
+    if proportion < 0 or proportion >= 1:
+        raise ValueError("filler_proportion must satisfy 0 <= proportion < 1")
+    if proportion == 0:
+        return 0
+    return max(1, round(num_non_filler_lines * proportion / (1 - proportion)))
+
+
+def _render_program_with_filler(
+    instructions: list[str],
+    *,
+    formatter: FormatterSpec,
+    metadata: dict[str, str],
+    level: FillerDistraction,
+    num_filler_lines: int,
+    rng: random.Random,
+) -> str:
+    template_value = getattr(formatter.templates, f"filler_{level}")
+    if template_value is None:
+        raise ValueError(f"formatter {formatter.name!r} has no filler_{level} template")
+    filler_lines = [
+        _substitute(
+            _choose(template_value, rng),
+            allowed={"variable", "value", "filler_index", *metadata},
+            variable=rng.choice(formatter.vocabulary.variables[: int(metadata["num_variables"])]),
+            value=rng.choice(formatter.vocabulary.values[: int(metadata["num_values"])]),
+            filler_index=str(index + 1),
+            **metadata,
+        )
+        for index in range(num_filler_lines)
+    ]
+    total_lines = len(instructions) + num_filler_lines
+    instruction_positions = set(rng.sample(range(total_lines), len(instructions)))
+    instruction_iterator = iter(instructions)
+    filler_iterator = iter(filler_lines)
+    return "\n".join(
+        next(instruction_iterator) if position in instruction_positions else next(filler_iterator)
+        for position in range(total_lines)
     )
 
 

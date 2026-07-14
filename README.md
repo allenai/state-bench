@@ -116,12 +116,54 @@ counts rather than putting every row at the exact bucket center.
 
 Rows include `num_extra_assignments` and `target_extra_assignments` metadata.
 R-trivial traces cannot become long through reassignment because each variable
-is assigned exactly once, so the provided long-context experiment focuses on
-aperiodic and periodic traces:
+is assigned exactly once. They can now be lengthened with surface-only filler;
+the provided long-context experiment varies filler for one-variable r-trivial
+examples in the `integer-code` format while retaining assignment-depth sweeps
+for aperiodic and periodic traces:
 
 ```bash
 uv run state-bench config check configs/experiments/long-context.yaml
 uv run state-bench build configs/experiments/long-context.yaml
+```
+
+### No-op filler lines
+
+Each condition can vary the requested proportion of nonblank prompt lines that
+are no-op filler and how distracting those lines look:
+
+```yaml
+generation:
+  conditions:
+    - complexity: r-trivial
+      num_variables: [1]
+      num_values: 10
+      extra_assignments: {min: 0, max: 0}
+      filler:
+        proportions: [0.0, 0.9, 0.99, 0.999]
+        distraction_levels: [easy, medium, hard]
+      formatters: [integer-code]
+```
+
+The filler axes share `samples_per_condition`; they do not multiply it. A zero
+proportion creates one distraction-free baseline, while every positive
+proportion is crossed with each distraction level. If a prompt has `L`
+non-filler content lines and requests proportion `p`, rendering adds the nearest
+integer to `L * p / (1 - p)` filler lines. Filler is interleaved with program
+lines without changing assignment order, the canonical trace, or the answer.
+
+`formatters` is an optional condition-level filter. Omit it to render the
+condition with every experiment formatter. Each selected formatter supplies
+`filler_easy`, `filler_medium`, and `filler_hard` templates. Filler templates
+may use `$variable`, `$value`, `$filler_index`, and the standard metadata
+placeholders.
+
+Rendered rows record `filler_proportion`, `actual_filler_proportion`,
+`filler_distraction`, and `num_filler_lines`. Preview an exact setting with:
+
+```bash
+uv run state-bench sample configs/experiments/long-context.yaml \
+  integer-code--r-trivial --num-variables 1 \
+  --filler-proportion 0.99 --filler-distraction hard
 ```
 
 ### Formatter YAML

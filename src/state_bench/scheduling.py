@@ -7,7 +7,14 @@ import random
 from collections import Counter
 from dataclasses import dataclass
 
-from state_bench.config import AssignmentRange, ExtraAssignmentsSpec, LogSpacedAssignmentSchedule
+from state_bench.config import (
+    AssignmentRange,
+    ExtraAssignmentsSpec,
+    FillerDistraction,
+    FillerSpec,
+    LogSpacedAssignmentSchedule,
+    filler_variants,
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -15,6 +22,42 @@ class AssignmentPlanItem:
     min_extra_assignments: int
     max_extra_assignments: int
     target_extra_assignments: int | None
+
+
+@dataclass(frozen=True, slots=True)
+class FillerPlanItem:
+    proportion: float
+    distraction: FillerDistraction | None
+
+
+def build_filler_plan(
+    spec: FillerSpec,
+    *,
+    total_samples: int,
+    rng: random.Random,
+) -> tuple[FillerPlanItem, ...]:
+    """Distribute a fixed sample budget as evenly as possible across filler variants."""
+
+    if total_samples < 0:
+        raise ValueError("total_samples must be non-negative")
+    variants = filler_variants(spec)
+    if 0 < total_samples < len(variants):
+        raise ValueError(
+            f"samples_per_condition={total_samples} cannot cover {len(variants)} filler variants"
+        )
+    quotient, remainder = divmod(total_samples, len(variants))
+    plan = [
+        FillerPlanItem(proportion, distraction)
+        for index, (proportion, distraction) in enumerate(variants)
+        for _ in range(quotient + (index < remainder))
+    ]
+    rng.shuffle(plan)
+    return tuple(plan)
+
+
+def sample_filler_plan_item(spec: FillerSpec, *, rng: random.Random) -> FillerPlanItem:
+    proportion, distraction = rng.choice(filler_variants(spec))
+    return FillerPlanItem(proportion, distraction)
 
 
 def build_assignment_plan(

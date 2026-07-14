@@ -6,10 +6,11 @@ from pathlib import Path
 
 import pytest
 
-from state_bench.config import LogSpacedAssignmentSchedule, load_experiment
+from state_bench.config import FillerSpec, LogSpacedAssignmentSchedule, load_experiment
 from state_bench.scheduling import (
     allocate_bucket_counts,
     build_assignment_plan,
+    build_filler_plan,
     log_spaced_buckets,
 )
 
@@ -77,4 +78,24 @@ def test_too_small_sample_budget_is_rejected() -> None:
 def test_long_context_experiment_config_loads() -> None:
     loaded = load_experiment(ROOT / "configs/experiments/long-context.yaml")
     assert loaded.spec.dataset.name == "state-tracking-long-context-v1"
-    assert len(loaded.spec.generation.conditions) == 2
+    assert len(loaded.spec.generation.conditions) == 3
+    assert loaded.spec.generation.conditions[0].formatters == ["integer-code"]
+
+
+def test_filler_plan_preserves_budget_and_evenly_covers_axis() -> None:
+    spec = FillerSpec(
+        proportions=[0.0, 0.9],
+        distraction_levels=["easy", "medium", "hard"],
+    )
+    first = build_filler_plan(spec, total_samples=10, rng=random.Random(7))
+    second = build_filler_plan(spec, total_samples=10, rng=random.Random(7))
+    assert first == second
+    assert len(first) == 10
+    counts = Counter((item.proportion, item.distraction) for item in first)
+    assert set(counts) == {
+        (0.0, None),
+        (0.9, "easy"),
+        (0.9, "medium"),
+        (0.9, "hard"),
+    }
+    assert max(counts.values()) - min(counts.values()) <= 1

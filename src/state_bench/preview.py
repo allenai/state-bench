@@ -6,13 +6,25 @@ import random
 from dataclasses import dataclass
 from typing import Any
 
-from state_bench.config import ConditionSpec, FormatterSpec, LoadedExperiment
+from state_bench.config import (
+    ConditionSpec,
+    FillerDistraction,
+    FormatterSpec,
+    LoadedExperiment,
+    condition_uses_formatter,
+    filler_variants,
+)
 from state_bench.distractors import generate_incorrect_states
 from state_bench.generation import generate_instance
 from state_bench.io import derive_seed, hub_config_name
 from state_bench.model import StateTrackingInstance
 from state_bench.rendering import RenderedExample, render_instance
-from state_bench.scheduling import AssignmentPlanItem, sample_assignment_plan_item
+from state_bench.scheduling import (
+    AssignmentPlanItem,
+    FillerPlanItem,
+    sample_assignment_plan_item,
+    sample_filler_plan_item,
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -45,6 +57,7 @@ def available_config_names(loaded: LoadedExperiment) -> tuple[str, ...]:
         )
         for formatter in loaded.formatters
         for condition in loaded.spec.generation.conditions
+        if condition_uses_formatter(condition, formatter.name)
     }
     return tuple(sorted(names))
 
@@ -56,18 +69,23 @@ def generate_preview(
     seed: int | None = None,
     num_variables: int | None = None,
     extra_assignments: int | None = None,
+    filler_proportion: float | None = None,
+    filler_distraction: FillerDistraction | None = None,
 ) -> SamplePreview:
     """Generate one sample for a rendered config without creating output files."""
 
     resolved_seed = loaded.spec.dataset.seed if seed is None else seed
     formatter, conditions = _resolve_config(loaded, config_name)
     candidates = [
-        (condition, candidate_num_variables)
+        (condition, candidate_num_variables, candidate_proportion, candidate_distraction)
         for condition in conditions
         for candidate_num_variables in condition.num_variables
+        for candidate_proportion, candidate_distraction in filler_variants(condition.filler)
         if num_variables is None or candidate_num_variables == num_variables
         if extra_assignments is None
         or condition.extra_assignments.min <= extra_assignments <= condition.extra_assignments.max
+        if filler_proportion is None or candidate_proportion == filler_proportion
+        if filler_distraction is None or candidate_distraction == filler_distraction
     ]
     if not candidates:
         supported = sorted(
@@ -79,7 +97,9 @@ def generate_preview(
         )
 
     selection_rng = random.Random(derive_seed(resolved_seed, "preview", config_name, "selection"))
-    condition, selected_num_variables = selection_rng.choice(candidates)
+    condition, selected_num_variables, selected_proportion, selected_distraction = (
+        selection_rng.choice(candidates)
+    )
     if extra_assignments is None:
         plan_item = sample_assignment_plan_item(
             condition.extra_assignments,
@@ -87,6 +107,13 @@ def generate_preview(
         )
     else:
         plan_item = AssignmentPlanItem(extra_assignments, extra_assignments, extra_assignments)
+    if filler_proportion is None and filler_distraction is None:
+        filler_item = sample_filler_plan_item(
+            condition.filler,
+            rng=random.Random(derive_seed(resolved_seed, "preview", config_name, "filler")),
+        )
+    else:
+        filler_item = FillerPlanItem(selected_proportion, selected_distraction)
     instance = _generate(
         loaded,
         condition=condition,
@@ -105,6 +132,8 @@ def generate_preview(
         rng=random.Random(derive_seed(resolved_seed, "preview", config_name, "surface")),
         incorrect_states=incorrect_states,
         shuffle_choices=loaded.spec.output.multiple_choice.shuffle_choices,
+        filler_proportion=filler_item.proportion,
+        filler_distraction=filler_item.distraction,
     )
     return SamplePreview(
         config_name=config_name,
@@ -133,6 +162,10 @@ def format_preview(preview: SamplePreview) -> str:
         f"Assignments: {len(preview.instance.operations)}\n"
         f"Extra assignments: {len(preview.instance.operations) - preview.instance.num_variables}\n"
         f"Target extra-assignment bucket: {preview.target_extra_assignments}\n\n"
+        f"Filler proportion: {preview.rendered.filler_proportion}\n"
+        f"Actual filler proportion: {preview.rendered.actual_filler_proportion}\n"
+        f"Filler distraction: {preview.rendered.filler_distraction}\n"
+        f"Filler lines: {preview.rendered.num_filler_lines}\n\n"
         f"Canonical trace:\n{operations}\n\n"
         f"Prefix:\n{preview.rendered.prefix}\n\n"
         f"Completion:\n{preview.rendered.completion}\n\n"
@@ -149,6 +182,8 @@ def _resolve_config(
     for formatter in loaded.formatters:
         grouped: dict[str, list[ConditionSpec]] = {}
         for condition in loaded.spec.generation.conditions:
+            if not condition_uses_formatter(condition, formatter.name):
+                continue
             name = hub_config_name(
                 loaded.spec.huggingface.config_naming,
                 formatter=formatter.name,
