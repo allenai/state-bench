@@ -5,6 +5,11 @@ dataset:
   seed: 13
   output_dir: ../../data/state-tracking-long-context-v1
 
+huggingface:
+  repository:
+    repo_id: jacksonp-ai2/state-bench-lc
+    private: true
+
 splits:
   test:
     # This is a fixed budget for each complexity/variable-count pair. It is
