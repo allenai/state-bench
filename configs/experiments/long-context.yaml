@@ -24,7 +24,7 @@ generation:
       extra_assignments:
         distribution: log-spaced
         min: 1
-        max: 4096
+        max: 24000
         growth_factor: 2.0
         sample_decay: 0.65
         jitter_fraction: 0.10
@@ -35,7 +35,7 @@ generation:
       extra_assignments:
         distribution: log-spaced
         min: 1
-        max: 4096
+        max: 24000
         growth_factor: 2.0
         sample_decay: 0.65
         jitter_fraction: 0.10
