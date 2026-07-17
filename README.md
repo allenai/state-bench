@@ -55,6 +55,7 @@ generation:
   require_strict_witness: true
   allow_self_reference: false
   distinct_initial_values: false
+  periodic_constant_probability: 0.1
   conditions:
     - complexity: r-trivial
       num_variables: [2, 4, 6]
@@ -76,6 +77,14 @@ formatters:
   - config: ../formats/status-lights.yaml
   - config: ../formats/people-in-rooms.yaml
 ```
+
+Periodic generation is dependency-biased: copy operations extend the deepest
+currently live provenance chain into one of the shallowest variables. The
+`periodic_constant_probability` controls how often subsequent periodic steps
+write a new constant instead, resetting that variable's dependency length to
+zero and retaining multiple value lineages. A strict value-changing copy is
+always inserted first when `require_strict_witness` is enabled. Lower constant
+probabilities therefore produce substantially deeper final dependency chains.
 
 Paths in an experiment are resolved relative to that experiment file.
 Configuration models are strict and versioned: unknown keys, invalid family

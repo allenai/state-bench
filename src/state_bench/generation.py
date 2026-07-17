@@ -26,6 +26,7 @@ def generate_instance(
     distinct_initial_values: bool = False,
     require_strict_witness: bool = True,
     allow_self_reference: bool = False,
+    periodic_constant_probability: float = 0.1,
     rng: random.Random,
 ) -> StateTrackingInstance:
     """Generate one evaluated instance satisfying its family constraints."""
@@ -38,6 +39,7 @@ def generate_instance(
         max_extra_assignments=max_extra_assignments,
         distinct_initial_values=distinct_initial_values,
         require_strict_witness=require_strict_witness,
+        periodic_constant_probability=periodic_constant_probability,
     )
 
     initial_values = _initial_values(
@@ -53,6 +55,7 @@ def generate_instance(
         AssignConstant(target=variable, value=initial_values[variable]) for variable in variable_order
     ]
     state = list(evaluate(num_variables=num_variables, num_values=num_values, operations=operations))
+    dependency_depths = [0] * num_variables
 
     extra_count = rng.randint(min_extra_assignments, max_extra_assignments)
     if complexity is Complexity.APERIODIC:
@@ -68,16 +71,7 @@ def generate_instance(
             operations.append(witness)
             _apply(witness, state)
     elif complexity is Complexity.PERIODIC:
-        non_witness_count = extra_count - 1 if require_strict_witness else extra_count
-        for _ in range(non_witness_count):
-            operation = _safe_periodic_operation(
-                state=state,
-                num_values=num_values,
-                allow_self_reference=allow_self_reference,
-                rng=rng,
-            )
-            operations.append(operation)
-            _apply(operation, state)
+        remaining_count = extra_count
         if require_strict_witness:
             target, source = rng.choice(
                 [
@@ -90,6 +84,20 @@ def generate_instance(
             witness = AssignVariable(target=target, source=source)
             operations.append(witness)
             _apply(witness, state)
+            _apply_dependency(witness, dependency_depths)
+            remaining_count -= 1
+        for _ in range(remaining_count):
+            operation = _dependency_biased_periodic_operation(
+                num_variables=num_variables,
+                dependency_depths=dependency_depths,
+                num_values=num_values,
+                allow_self_reference=allow_self_reference,
+                constant_probability=periodic_constant_probability,
+                rng=rng,
+            )
+            operations.append(operation)
+            _apply(operation, state)
+            _apply_dependency(operation, dependency_depths)
 
     final_state = evaluate(num_variables=num_variables, num_values=num_values, operations=operations)
     query = _choose_query(num_variables=num_variables, query_mode=query_mode, rng=rng)
@@ -112,6 +120,7 @@ def _validate_parameters(
     max_extra_assignments: int,
     distinct_initial_values: bool,
     require_strict_witness: bool,
+    periodic_constant_probability: float,
 ) -> None:
     if num_variables < 1 or num_values < 1:
         raise ValueError("num_variables and num_values must be positive")
@@ -119,6 +128,8 @@ def _validate_parameters(
         raise ValueError("extra assignment bounds must satisfy 0 <= min <= max")
     if distinct_initial_values and num_values < num_variables:
         raise ValueError("distinct initial values require num_values >= num_variables")
+    if not 0 <= periodic_constant_probability <= 1:
+        raise ValueError("periodic constant probability must satisfy 0 <= probability <= 1")
     if complexity is Complexity.R_TRIVIAL and max_extra_assignments != 0:
         raise ValueError("r-trivial instances cannot have extra assignments")
     if complexity is Complexity.APERIODIC and require_strict_witness and min_extra_assignments < 1:
@@ -148,53 +159,36 @@ def _initial_values(
     return values
 
 
-def _safe_periodic_operation(
+def _dependency_biased_periodic_operation(
     *,
-    state: list[int],
+    num_variables: int,
+    dependency_depths: list[int],
     num_values: int,
     allow_self_reference: bool,
+    constant_probability: float,
     rng: random.Random,
 ) -> Operation:
-    """Sample an operation while preserving two distinct live values for the final witness."""
+    """Prefer extending the deepest live provenance chain into a shallow variable."""
 
-    for _ in range(32):
-        if rng.random() < 0.5:
-            operation: Operation = AssignConstant(
-                target=rng.randrange(len(state)),
-                value=rng.randrange(num_values),
-            )
-        else:
-            target = rng.randrange(len(state))
-            source_choices = [
-                source
-                for source in range(len(state))
-                if allow_self_reference or source != target
-            ]
-            if not source_choices:
-                continue
-            operation = AssignVariable(target=target, source=rng.choice(source_choices))
-        candidate_state = [*state]
-        _apply(operation, candidate_state)
-        if len(set(candidate_state)) >= 2:
-            return operation
+    copy_possible = num_variables > 1 or allow_self_reference
+    if rng.random() < constant_probability or not copy_possible:
+        return AssignConstant(
+            target=rng.randrange(num_variables),
+            value=rng.randrange(num_values),
+        )
 
-    # The rejection loop should succeed quickly. Keep an exhaustive fallback so
-    # tiny or unusual domains still have deterministic, total behavior.
-    candidates: list[Operation] = []
-    for target in range(len(state)):
-        for value in range(num_values):
-            candidate_state = [*state]
-            candidate_state[target] = value
-            if len(set(candidate_state)) >= 2:
-                candidates.append(AssignConstant(target=target, value=value))
-        for source in range(len(state)):
-            if not allow_self_reference and target == source:
-                continue
-            candidate_state = [*state]
-            candidate_state[target] = state[source]
-            if len(set(candidate_state)) >= 2:
-                candidates.append(AssignVariable(target=target, source=source))
-    return rng.choice(candidates)
+    max_depth = max(dependency_depths)
+    source = rng.choice(
+        [index for index, depth in enumerate(dependency_depths) if depth == max_depth]
+    )
+    target_choices = [index for index in range(num_variables) if index != source]
+    if not target_choices:
+        target_choices = [source]
+    min_target_depth = min(dependency_depths[index] for index in target_choices)
+    target = rng.choice(
+        [index for index in target_choices if dependency_depths[index] == min_target_depth]
+    )
+    return AssignVariable(target=target, source=source)
 
 
 def _apply(operation: Operation, state: list[int]) -> None:
@@ -202,6 +196,13 @@ def _apply(operation: Operation, state: list[int]) -> None:
         state[operation.target] = operation.value
     else:
         state[operation.target] = state[operation.source]
+
+
+def _apply_dependency(operation: Operation, dependency_depths: list[int]) -> None:
+    if isinstance(operation, AssignConstant):
+        dependency_depths[operation.target] = 0
+    else:
+        dependency_depths[operation.target] = dependency_depths[operation.source] + 1
 
 
 def _choose_query(*, num_variables: int, query_mode: QueryMode, rng: random.Random) -> tuple[int, ...]:

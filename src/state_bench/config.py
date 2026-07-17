@@ -99,6 +99,7 @@ class GenerationSpec(StrictModel):
     require_strict_witness: bool = True
     allow_self_reference: bool = False
     distinct_initial_values: bool = False
+    periodic_constant_probability: float = Field(default=0.1, ge=0.0, le=1.0)
     conditions: list[ConditionSpec]
 
     @model_validator(mode="after")

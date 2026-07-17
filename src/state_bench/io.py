@@ -115,6 +115,9 @@ def build_dataset(loaded: LoadedExperiment, *, output_dir: Path | None = None) -
                             distinct_initial_values=spec.generation.distinct_initial_values,
                             require_strict_witness=spec.generation.require_strict_witness,
                             allow_self_reference=spec.generation.allow_self_reference,
+                            periodic_constant_probability=(
+                                spec.generation.periodic_constant_probability
+                            ),
                             rng=random.Random(semantic_seed),
                         )
                         canonical_record = {

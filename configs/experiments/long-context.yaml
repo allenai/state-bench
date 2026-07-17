@@ -17,6 +17,9 @@ generation:
   require_strict_witness: true
   allow_self_reference: false
   distinct_initial_values: false
+  # Periodic traces mostly extend deep copy provenance chains; occasional
+  # constants retain multiple value lineages and reset selected chains.
+  periodic_constant_probability: 0.1
   conditions:
     - complexity: r-trivial
       num_variables: [1]

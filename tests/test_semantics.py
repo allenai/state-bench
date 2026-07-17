@@ -75,7 +75,33 @@ def test_strict_family_witnesses() -> None:
     )
     assert len(aperiodic.operations) == 4
     assert all(isinstance(operation, AssignConstant) for operation in aperiodic.operations)
-    assert isinstance(periodic.operations[-1], AssignVariable)
+    state: list[int | None] = [None] * periodic.num_variables
+    changing_copy_found = False
+    for operation in periodic.operations:
+        if isinstance(operation, AssignConstant):
+            state[operation.target] = operation.value
+        else:
+            changing_copy_found |= state[operation.target] != state[operation.source]
+            state[operation.target] = state[operation.source]
+    assert changing_copy_found
+
+
+def test_periodic_generation_can_build_deep_dependency_chains() -> None:
+    periodic = generate_instance(
+        complexity=Complexity.PERIODIC,
+        num_variables=4,
+        num_values=5,
+        min_extra_assignments=100,
+        max_extra_assignments=100,
+        periodic_constant_probability=0.0,
+        rng=random.Random(3),
+    )
+    lengths = dependency_lengths(
+        num_variables=periodic.num_variables,
+        operations=periodic.operations,
+    )
+    assert min(lengths) >= 96
+    assert max(lengths) == 100
 
 
 def test_uninitialized_reference_is_rejected() -> None:

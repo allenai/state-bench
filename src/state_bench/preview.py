@@ -220,6 +220,7 @@ def _generate(
         distinct_initial_values=generation.distinct_initial_values,
         require_strict_witness=generation.require_strict_witness,
         allow_self_reference=generation.allow_self_reference,
+        periodic_constant_probability=generation.periodic_constant_probability,
         rng=random.Random(seed),
     )
 
