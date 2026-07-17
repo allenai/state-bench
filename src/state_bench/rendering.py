@@ -9,6 +9,7 @@ from typing import Any
 
 from state_bench.config import FillerDistraction, FormatterSpec, TemplateValue
 from state_bench.model import AssignConstant, AssignVariable, StateTrackingInstance
+from state_bench.semantics import dependency_summary
 
 
 @dataclass(frozen=True, slots=True)
@@ -29,6 +30,10 @@ class RenderedExample:
     actual_filler_proportion: float
     filler_distraction: str | None
     num_filler_lines: int
+    final_dependency_lengths: tuple[int, ...]
+    max_dependency_length: int
+    mean_dependency_length: float
+    modal_dependency_length: int
 
     def to_record(self) -> dict[str, Any]:
         return {
@@ -48,6 +53,10 @@ class RenderedExample:
             "actual_filler_proportion": self.actual_filler_proportion,
             "filler_distraction": self.filler_distraction,
             "num_filler_lines": self.num_filler_lines,
+            "final_dependency_lengths": list(self.final_dependency_lengths),
+            "max_dependency_length": self.max_dependency_length,
+            "mean_dependency_length": self.mean_dependency_length,
+            "modal_dependency_length": self.modal_dependency_length,
         }
 
 
@@ -155,6 +164,7 @@ def render_instance(
         incorrect_completions = tuple(value + "\n" for value in incorrect_completions)
         choices = [value + "\n" for value in choices]
 
+    dependencies = dependency_summary(instance)
     return RenderedExample(
         instance_id=instance.instance_id,
         formatter=formatter.name,
@@ -176,6 +186,10 @@ def render_instance(
         ),
         filler_distraction=filler_distraction,
         num_filler_lines=num_filler_lines,
+        final_dependency_lengths=dependencies.final_dependency_lengths,
+        max_dependency_length=dependencies.max_dependency_length,
+        mean_dependency_length=dependencies.mean_dependency_length,
+        modal_dependency_length=dependencies.modal_dependency_length,
     )
 
 

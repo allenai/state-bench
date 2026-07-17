@@ -5,8 +5,8 @@ import random
 import pytest
 
 from state_bench.generation import generate_instance
-from state_bench.model import AssignConstant, AssignVariable, Complexity
-from state_bench.semantics import evaluate
+from state_bench.model import AssignConstant, AssignVariable, Complexity, StateTrackingInstance
+from state_bench.semantics import dependency_lengths, dependency_summary, evaluate
 
 
 def test_prompt_examples() -> None:
@@ -81,3 +81,27 @@ def test_strict_family_witnesses() -> None:
 def test_uninitialized_reference_is_rejected() -> None:
     with pytest.raises(ValueError, match="uninitialized"):
         evaluate(num_variables=2, num_values=2, operations=(AssignVariable(0, 1),))
+
+
+def test_dependency_lengths_follow_eager_copy_provenance_and_overwrites() -> None:
+    operations = (
+        AssignConstant(0, 4),
+        AssignVariable(1, 0),
+        AssignVariable(2, 1),
+        AssignVariable(0, 2),
+        AssignConstant(1, 3),
+    )
+    assert dependency_lengths(num_variables=3, operations=operations) == (3, 0, 2)
+
+    instance = StateTrackingInstance.create(
+        complexity=Complexity.PERIODIC,
+        num_variables=3,
+        num_values=5,
+        operations=operations,
+        query=(0, 1, 2),
+        final_state=(4, 3, 4),
+    )
+    summary = dependency_summary(instance)
+    assert summary.max_dependency_length == 3
+    assert summary.mean_dependency_length == pytest.approx(5 / 3)
+    assert summary.modal_dependency_length == 0

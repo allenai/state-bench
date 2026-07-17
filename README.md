@@ -115,11 +115,20 @@ coverage of the longest contexts. `jitter_fraction` samples nearby assignment
 counts rather than putting every row at the exact bucket center.
 
 Rows include `num_extra_assignments` and `target_extra_assignments` metadata.
+They also include final-state dependency provenance metadata:
+
+- `final_dependency_lengths` gives the copy-hop count for every variable in
+  variable-index order. A direct constant assignment has length zero, and each
+  eager variable copy adds one to the source's length at that moment.
+- `max_dependency_length`, `mean_dependency_length`, and
+  `modal_dependency_length` summarize those per-variable lengths. If several
+  lengths tie for the mode, the smallest is recorded.
+
 R-trivial traces cannot become long through reassignment because each variable
 is assigned exactly once. They can now be lengthened with surface-only filler;
 the provided long-context experiment varies filler for one-variable r-trivial
-examples in the `integer-code` format while retaining assignment-depth sweeps
-for aperiodic and periodic traces:
+examples in every configured format while retaining assignment-depth sweeps for
+aperiodic and periodic traces:
 
 ```bash
 uv run state-bench config check configs/experiments/long-context.yaml

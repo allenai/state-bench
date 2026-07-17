@@ -49,6 +49,11 @@ def test_build_preserves_ids_across_formatters(tmp_path: Path) -> None:
     assert len(canonical) == len(integer) == len(cubes) == 2
     assert [row["example_id"] for row in canonical] == [row["example_id"] for row in integer]
     assert [row["instance_id"] for row in integer] == [row["instance_id"] for row in cubes]
+    for canonical_row, rendered_row in zip(canonical, integer, strict=True):
+        assert rendered_row["final_dependency_lengths"] == canonical_row["final_dependency_lengths"]
+        assert rendered_row["max_dependency_length"] == canonical_row["max_dependency_length"]
+        assert rendered_row["mean_dependency_length"] == canonical_row["mean_dependency_length"]
+        assert rendered_row["modal_dependency_length"] == canonical_row["modal_dependency_length"]
     for row in (*integer, *cubes):
         assert len(row["incorrect_completions"]) == 4
         assert len(set(row["incorrect_completions"])) == 4

@@ -80,13 +80,20 @@ def test_preview_can_select_an_exact_long_assignment_depth() -> None:
     assert len(preview.instance.operations) == 130
 
 
-def test_preview_can_select_exact_filler_axes_and_honors_formatter_scope() -> None:
+def test_long_context_preview_exposes_padded_r_trivial_in_every_formatter() -> None:
     loaded = load_experiment(ROOT / "configs/experiments/long-context.yaml")
-    assert "integer-code--r-trivial" in available_config_names(loaded)
-    assert "cube-painting--r-trivial" not in available_config_names(loaded)
+    names = available_config_names(loaded)
+    for formatter in (
+        "integer-code",
+        "cube-painting",
+        "spreadsheet-cells",
+        "status-lights",
+        "people-in-rooms",
+    ):
+        assert f"{formatter}--r-trivial" in names
     preview = generate_preview(
         loaded,
-        config_name="integer-code--r-trivial",
+        config_name="cube-painting--r-trivial",
         seed=7,
         num_variables=1,
         filler_proportion=0.99,
@@ -94,4 +101,5 @@ def test_preview_can_select_exact_filler_axes_and_honors_formatter_scope() -> No
     )
     assert preview.rendered.filler_proportion == 0.99
     assert preview.rendered.filler_distraction == "medium"
-    assert preview.rendered.num_filler_lines == 198
+    assert preview.rendered.num_filler_lines == 297
+    assert "Unrelated catalog note" in preview.rendered.prefix

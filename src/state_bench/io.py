@@ -16,6 +16,7 @@ from state_bench.distractors import generate_incorrect_states
 from state_bench.generation import generate_instance
 from state_bench.rendering import render_instance
 from state_bench.scheduling import build_assignment_plan, build_filler_plan
+from state_bench.semantics import dependency_summary
 
 
 def build_dataset(loaded: LoadedExperiment, *, output_dir: Path | None = None) -> Path:
@@ -119,6 +120,7 @@ def build_dataset(loaded: LoadedExperiment, *, output_dir: Path | None = None) -
                         canonical_record = {
                             "example_id": example_id,
                             **instance.to_record(),
+                            **dependency_summary(instance).to_record(),
                             "num_extra_assignments": len(instance.operations) - num_variables,
                             "target_extra_assignments": plan_item.target_extra_assignments,
                             "filler_proportion": filler_item.proportion,

@@ -27,7 +27,6 @@ generation:
       filler:
         proportions: [0.0, 0.9, 0.99, 0.999]
         distraction_levels: [easy, medium, hard]
-      formatters: [integer-code]
     - complexity: aperiodic
       num_variables: [2, 4, 6]
       num_values: 10

@@ -79,7 +79,7 @@ def test_long_context_experiment_config_loads() -> None:
     loaded = load_experiment(ROOT / "configs/experiments/long-context.yaml")
     assert loaded.spec.dataset.name == "state-tracking-long-context-v1"
     assert len(loaded.spec.generation.conditions) == 3
-    assert loaded.spec.generation.conditions[0].formatters == ["integer-code"]
+    assert loaded.spec.generation.conditions[0].formatters is None
 
 
 def test_filler_plan_preserves_budget_and_evenly_covers_axis() -> None:
