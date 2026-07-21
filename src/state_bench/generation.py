@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import random
+from collections import Counter
 
 from state_bench.model import (
     AssignConstant,
@@ -56,6 +57,7 @@ def generate_instance(
     ]
     state = list(evaluate(num_variables=num_variables, num_values=num_values, operations=operations))
     dependency_depths = [0] * num_variables
+    target_periodic_diversity = len(set(state))
 
     extra_count = rng.randint(min_extra_assignments, max_extra_assignments)
     if complexity is Complexity.APERIODIC:
@@ -73,26 +75,29 @@ def generate_instance(
     elif complexity is Complexity.PERIODIC:
         remaining_count = extra_count
         if require_strict_witness:
-            target, source = rng.choice(
-                [
-                    (target, source)
-                    for target in range(num_variables)
-                    for source in range(num_variables)
-                    if state[target] != state[source] and (allow_self_reference or target != source)
-                ]
+            copy_candidates = _periodic_copy_candidates(
+                state=state,
+                desired_diversity=target_periodic_diversity,
             )
-            witness = AssignVariable(target=target, source=source)
+            diversity_preserving = [candidate for candidate in copy_candidates if candidate[2]]
+            witness = _choose_dependency_biased_copy(
+                diversity_preserving or copy_candidates,
+                dependency_depths=dependency_depths,
+                rng=rng,
+            )
             operations.append(witness)
             _apply(witness, state)
             _apply_dependency(witness, dependency_depths)
             remaining_count -= 1
-        for _ in range(remaining_count):
-            operation = _dependency_biased_periodic_operation(
-                num_variables=num_variables,
+        for index in range(remaining_count):
+            operation = _value_aware_periodic_operation(
+                state=state,
                 dependency_depths=dependency_depths,
                 num_values=num_values,
                 allow_self_reference=allow_self_reference,
                 constant_probability=periodic_constant_probability,
+                desired_diversity=target_periodic_diversity,
+                remaining_after=remaining_count - index - 1,
                 rng=rng,
             )
             operations.append(operation)
@@ -159,36 +164,199 @@ def _initial_values(
     return values
 
 
-def _dependency_biased_periodic_operation(
+def _value_aware_periodic_operation(
     *,
-    num_variables: int,
+    state: list[int],
     dependency_depths: list[int],
     num_values: int,
     allow_self_reference: bool,
     constant_probability: float,
+    desired_diversity: int,
+    remaining_after: int,
     rng: random.Random,
 ) -> Operation:
-    """Prefer extending the deepest live provenance chain into a shallow variable."""
+    """Choose a value-changing update while retaining diverse live lineages.
 
-    copy_possible = num_variables > 1 or allow_self_reference
-    if rng.random() < constant_probability or not copy_possible:
-        return AssignConstant(
-            target=rng.randrange(num_variables),
-            value=rng.randrange(num_values),
+    Copy candidates normally preserve the initial number of distinct live
+    values. When that is impossible (notably with two variables), a copy may
+    temporarily collapse the state only if a later operation can restore its
+    diversity. Constants steer the trace back to the desired diversity and
+    preferentially reset shallow variables so deep provenance survives.
+    """
+
+    copy_candidates = _periodic_copy_candidates(
+        state=state,
+        desired_diversity=desired_diversity,
+    )
+    if not allow_self_reference:
+        copy_candidates = [
+            candidate for candidate in copy_candidates if candidate[0] != candidate[1]
+        ]
+    constant_candidates = _periodic_constant_candidates(
+        state=state,
+        num_values=num_values,
+        desired_diversity=desired_diversity,
+    )
+    exact_copies = [candidate for candidate in copy_candidates if candidate[2]]
+    exact_constants = [candidate for candidate in constant_candidates if candidate[1]]
+    current_diversity = len(set(state))
+
+    if current_diversity != desired_diversity:
+        if exact_constants:
+            return _choose_dependency_preserving_constant(
+                exact_constants,
+                dependency_depths=dependency_depths,
+                rng=rng,
+            )
+        if exact_copies:
+            return _choose_dependency_biased_copy(
+                exact_copies,
+                dependency_depths=dependency_depths,
+                rng=rng,
+            )
+
+    choose_constant = rng.random() < constant_probability
+    if choose_constant and exact_constants:
+        return _choose_dependency_preserving_constant(
+            exact_constants,
+            dependency_depths=dependency_depths,
+            rng=rng,
+        )
+    if exact_copies:
+        return _choose_dependency_biased_copy(
+            exact_copies,
+            dependency_depths=dependency_depths,
+            rng=rng,
+        )
+    if copy_candidates and remaining_after > 0 and not choose_constant:
+        return _choose_dependency_biased_copy(
+            copy_candidates,
+            dependency_depths=dependency_depths,
+            rng=rng,
+        )
+    if exact_constants:
+        return _choose_dependency_preserving_constant(
+            exact_constants,
+            dependency_depths=dependency_depths,
+            rng=rng,
         )
 
-    max_depth = max(dependency_depths)
-    source = rng.choice(
-        [index for index, depth in enumerate(dependency_depths) if depth == max_depth]
+    # Unusual non-strict configurations can begin with only one live value, or
+    # request as many distinct values as the value vocabulary contains. Choose
+    # the operation that gets closest to the target and let subsequent steps
+    # repair the state.
+    candidates: list[tuple[Operation, int]] = [
+        (AssignVariable(target=target, source=source), result_diversity)
+        for target, source, _, result_diversity in copy_candidates
+    ]
+    candidates.extend(
+        (operation, result_diversity)
+        for operation, _, result_diversity in constant_candidates
     )
-    target_choices = [index for index in range(num_variables) if index != source]
-    if not target_choices:
-        target_choices = [source]
-    min_target_depth = min(dependency_depths[index] for index in target_choices)
-    target = rng.choice(
-        [index for index in target_choices if dependency_depths[index] == min_target_depth]
+    if not candidates:
+        return AssignConstant(
+            target=rng.randrange(len(state)),
+            value=rng.randrange(num_values),
+        )
+    closest_distance = min(
+        abs(result_diversity - desired_diversity) for _, result_diversity in candidates
+    )
+    closest = [
+        operation
+        for operation, result_diversity in candidates
+        if abs(result_diversity - desired_diversity) == closest_distance
+    ]
+    return rng.choice(closest)
+
+
+def _periodic_copy_candidates(
+    *,
+    state: list[int],
+    desired_diversity: int,
+) -> list[tuple[int, int, bool, int]]:
+    """Return changing ``(target, source, is_exact, result_diversity)`` copies."""
+
+    value_counts = Counter(state)
+    current_diversity = len(value_counts)
+    candidates = []
+    for target in range(len(state)):
+        for source in range(len(state)):
+            if target == source or state[target] == state[source]:
+                continue
+            result_diversity = current_diversity - (value_counts[state[target]] == 1)
+            candidates.append(
+                (target, source, result_diversity == desired_diversity, result_diversity)
+            )
+    return candidates
+
+
+def _periodic_constant_candidates(
+    *,
+    state: list[int],
+    num_values: int,
+    desired_diversity: int,
+) -> list[tuple[AssignConstant, bool, int]]:
+    """Return changing constants and their effect on live-value diversity."""
+
+    value_counts = Counter(state)
+    current_diversity = len(value_counts)
+    candidates = []
+    for target in range(len(state)):
+        for value in range(num_values):
+            if value == state[target]:
+                continue
+            result_diversity = (
+                current_diversity
+                - (value_counts[state[target]] == 1)
+                + (value_counts[value] == 0)
+            )
+            candidates.append(
+                (
+                    AssignConstant(target=target, value=value),
+                    result_diversity == desired_diversity,
+                    result_diversity,
+                )
+            )
+    return candidates
+
+
+def _choose_dependency_biased_copy(
+    candidates: list[tuple[int, int, bool, int]],
+    *,
+    dependency_depths: list[int],
+    rng: random.Random,
+) -> AssignVariable:
+    max_source_depth = max(dependency_depths[source] for _, source, _, _ in candidates)
+    deepest = [
+        candidate
+        for candidate in candidates
+        if dependency_depths[candidate[1]] == max_source_depth
+    ]
+    min_target_depth = min(dependency_depths[target] for target, _, _, _ in deepest)
+    target, source, _, _ = rng.choice(
+        [
+            candidate
+            for candidate in deepest
+            if dependency_depths[candidate[0]] == min_target_depth
+        ]
     )
     return AssignVariable(target=target, source=source)
+
+
+def _choose_dependency_preserving_constant(
+    candidates: list[tuple[AssignConstant, bool, int]],
+    *,
+    dependency_depths: list[int],
+    rng: random.Random,
+) -> AssignConstant:
+    min_target_depth = min(dependency_depths[operation.target] for operation, _, _ in candidates)
+    return rng.choice(
+        [
+            operation
+            for operation, _, _ in candidates
+            if dependency_depths[operation.target] == min_target_depth
+        ]
+    )
 
 
 def _apply(operation: Operation, state: list[int]) -> None:

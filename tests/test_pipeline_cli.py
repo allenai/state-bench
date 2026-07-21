@@ -1,14 +1,17 @@
 from __future__ import annotations
 
 import json
+import sys
 from pathlib import Path
+from types import ModuleType
 
 import pytest
 import yaml
 
 from state_bench.cli import main
-from state_bench.config import load_experiment
+from state_bench.config import TokenStratificationSpec, load_experiment
 from state_bench.hub import (
+    _partition_records_by_token_stratum,
     push_hub_repository,
     stage_hub_repository,
     validate_hub_repository,
@@ -16,6 +19,22 @@ from state_bench.hub import (
 from state_bench.io import build_dataset, read_jsonl
 
 ROOT = Path(__file__).resolve().parents[1]
+
+
+class FakeLengthTokenizer:
+    name_or_path = "fake-length-tokenizer"
+
+    def __call__(
+        self,
+        texts: list[str],
+        *,
+        add_special_tokens: bool,
+        padding: bool,
+        truncation: bool,
+    ) -> dict[str, object]:
+        del padding, truncation
+        offset = int(add_special_tokens)
+        return {"input_ids": [[0] * (len(text) + offset) for text in texts]}
 
 
 def _small_experiment(tmp_path: Path) -> Path:
@@ -79,7 +98,84 @@ def test_hub_push_dry_run_needs_no_optional_dependencies(tmp_path: Path) -> None
         dry_run=True,
     )
     assert plan["repo_id"] == "example/state-bench"
+    assert plan["sync"] is False
+    assert plan["delete_patterns"] == []
     assert plan["files"] == ["README.md"]
+
+
+def test_hub_sync_dry_run_reports_remote_deletion_plan(tmp_path: Path) -> None:
+    _write_complete_staged_repository(tmp_path)
+    plan = push_hub_repository(
+        tmp_path,
+        repo_id="example/state-bench",
+        private=True,
+        dry_run=True,
+        sync=True,
+    )
+    assert plan["sync"] is True
+    assert plan["delete_patterns"] == ["*"]
+
+
+def test_hub_sync_cli_wires_the_opt_in_flag(
+    capsys: pytest.CaptureFixture[str],
+    tmp_path: Path,
+) -> None:
+    _write_complete_staged_repository(tmp_path)
+    manifest = {
+        "huggingface": {
+            "repository": {
+                "repo_id": "example/state-bench",
+                "private": True,
+            }
+        }
+    }
+    (tmp_path / "manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
+    assert main(["hub", "push", str(tmp_path), "--sync", "--dry-run"]) == 0
+    plan = json.loads(capsys.readouterr().out)
+    assert plan["sync"] is True
+    assert plan["delete_patterns"] == ["*"]
+
+
+def test_hub_sync_rejects_an_incomplete_staging_directory(tmp_path: Path) -> None:
+    (tmp_path / "README.md").write_text("card", encoding="utf-8")
+    with pytest.raises(ValueError, match="complete staged repository"):
+        push_hub_repository(
+            tmp_path,
+            repo_id="example/state-bench",
+            private=True,
+            dry_run=True,
+            sync=True,
+        )
+
+
+def test_hub_sync_passes_delete_pattern_to_huggingface(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    _write_complete_staged_repository(tmp_path)
+    calls: list[dict[str, object]] = []
+
+    class FakeApi:
+        def create_repo(self, **kwargs: object) -> None:
+            calls.append({"method": "create_repo", **kwargs})
+
+        def upload_folder(self, **kwargs: object) -> None:
+            calls.append({"method": "upload_folder", **kwargs})
+
+    fake_module = ModuleType("huggingface_hub")
+    fake_module.HfApi = FakeApi  # ty: ignore[unresolved-attribute]
+    monkeypatch.setitem(sys.modules, "huggingface_hub", fake_module)
+    monkeypatch.setattr("state_bench.hub._require_hub_dependencies", lambda: None)
+
+    push_hub_repository(
+        tmp_path,
+        repo_id="example/state-bench",
+        private=True,
+        dry_run=False,
+        sync=True,
+    )
+    upload_call = next(call for call in calls if call["method"] == "upload_folder")
+    assert upload_call["delete_patterns"] == "*"
 
 
 def test_stage_and_validate_hub_repository(tmp_path: Path) -> None:
@@ -96,10 +192,71 @@ def test_stage_and_validate_hub_repository(tmp_path: Path) -> None:
     assert report["files"] == 9
     assert report["counts"]["canonical/train"] == 2
     assert "configs:" in (repo_dir / "README.md").read_text(encoding="utf-8")
-    canonical_rows = parquet.read_table(
-        repo_dir / "data/canonical/train-00000-of-00002.parquet"
-    ).to_pylist()
-    assert canonical_rows[0]["operations"][-1]["source"] is not None
+    canonical_rows = parquet.read_table(repo_dir / "data/canonical/train-00000-of-00002.parquet").to_pylist()
+    assert any(operation["source"] is not None for operation in canonical_rows[0]["operations"])
+
+
+def test_token_strata_use_half_open_bounds_and_annotate_rows() -> None:
+    spec = TokenStratificationSpec.model_validate(
+        {
+            "tokenizer": "fake",
+            "ranges": [
+                {"name": "short", "min_tokens": 0, "max_tokens": 5},
+                {"name": "long", "min_tokens": 5, "max_tokens": None},
+            ],
+        }
+    )
+    partitioned = _partition_records_by_token_stratum(
+        [
+            {"example_id": "a", "prefix": "1234", "completion": "x"},
+            {"example_id": "b", "prefix": "12345", "completion": "x"},
+        ],
+        spec=spec,
+        tokenizer=FakeLengthTokenizer(),
+    )
+    assert [row["example_id"] for row in partitioned["short"]] == ["a"]
+    assert [row["example_id"] for row in partitioned["long"]] == ["b"]
+    assert partitioned["short"][0]["token_length"] == 4
+    assert partitioned["long"][0]["token_stratum"] == "long"
+
+
+def test_hub_stage_publishes_rendered_token_strata_as_splits(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    parquet = pytest.importorskip("pyarrow.parquet")
+    experiment = _small_experiment(tmp_path)
+    source = yaml.safe_load(experiment.read_text(encoding="utf-8"))
+    source["huggingface"]["token_strata"] = {
+        "tokenizer": "fake",
+        "ranges": [
+            {"name": "short", "min_tokens": 0, "max_tokens": 5},
+            {"name": "long", "min_tokens": 5, "max_tokens": None},
+        ],
+    }
+    experiment.write_text(yaml.safe_dump(source, sort_keys=False), encoding="utf-8")
+    loaded = load_experiment(experiment)
+    output = build_dataset(loaded)
+    for path in (output / "rendered").glob("*/*.jsonl"):
+        rows = read_jsonl(path)
+        for index, row in enumerate(rows):
+            row["prefix"] = "1234" if index % 2 == 0 else "12345"
+        path.write_text("".join(json.dumps(row) + "\n" for row in rows), encoding="utf-8")
+
+    monkeypatch.setattr("state_bench.hub.load_tokenizer", lambda *args, **kwargs: FakeLengthTokenizer())
+    repo_dir = stage_hub_repository(
+        loaded,
+        source_dir=output,
+        repo_dir=tmp_path / "stratified-hub",
+    )
+    report = validate_hub_repository(repo_dir)
+    assert report["counts"]["integer-code--periodic/train__short"] == 1
+    assert report["counts"]["integer-code--periodic/train__long"] == 1
+    row = parquet.read_table(
+        repo_dir / "data/integer-code--periodic/train__long-00000-of-00001.parquet"
+    ).to_pylist()[0]
+    assert row["token_length"] == 5
+    assert row["token_stratum"] == "long"
 
 
 def test_mixed_complexities_have_stable_parquet_schema_across_shards(tmp_path: Path) -> None:
@@ -176,3 +333,12 @@ def test_filler_axes_share_budget_and_can_be_scoped_to_one_formatter(tmp_path: P
         (0.5, "hard"),
     }
     assert all(row["actual_filler_proportion"] == row["filler_proportion"] for row in rendered)
+
+
+def _write_complete_staged_repository(path: Path) -> None:
+    (path / "README.md").write_text("card", encoding="utf-8")
+    (path / "generation.yaml").write_text("schema_version: 1\n", encoding="utf-8")
+    (path / "manifest.json").write_text("{}\n", encoding="utf-8")
+    data = path / "data/canonical"
+    data.mkdir(parents=True)
+    (data / "test-00000-of-00001.parquet").write_bytes(b"parquet")

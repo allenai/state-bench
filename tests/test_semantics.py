@@ -100,8 +100,66 @@ def test_periodic_generation_can_build_deep_dependency_chains() -> None:
         num_variables=periodic.num_variables,
         operations=periodic.operations,
     )
-    assert min(lengths) >= 96
-    assert max(lengths) == 100
+    assert min(lengths) >= 48
+    assert max(lengths) >= 50
+    assert len(set(periodic.final_state)) == 2
+
+
+def test_periodic_generation_uses_value_changing_updates_and_live_lineages() -> None:
+    periodic = generate_instance(
+        complexity=Complexity.PERIODIC,
+        num_variables=6,
+        num_values=10,
+        min_extra_assignments=1000,
+        max_extra_assignments=1000,
+        periodic_constant_probability=0.1,
+        rng=random.Random(3),
+    )
+    initial_state = evaluate(
+        num_variables=periodic.num_variables,
+        num_values=periodic.num_values,
+        operations=periodic.operations[: periodic.num_variables],
+    )
+    state = list(initial_state)
+    copy_count = 0
+    for operation in periodic.operations[periodic.num_variables :]:
+        old_value = state[operation.target]
+        if isinstance(operation, AssignConstant):
+            new_value = operation.value
+        else:
+            copy_count += 1
+            new_value = state[operation.source]
+        assert new_value != old_value
+        state[operation.target] = new_value
+
+    assert tuple(state) == periodic.final_state
+    assert len(set(periodic.final_state)) == len(set(initial_state)) >= 2
+    assert copy_count >= 800
+    assert max(
+        dependency_lengths(
+            num_variables=periodic.num_variables,
+            operations=periodic.operations,
+        )
+    ) >= 400
+
+
+def test_two_variable_periodic_generation_repairs_copy_collapse() -> None:
+    periodic = generate_instance(
+        complexity=Complexity.PERIODIC,
+        num_variables=2,
+        num_values=10,
+        min_extra_assignments=100,
+        max_extra_assignments=100,
+        periodic_constant_probability=0.0,
+        rng=random.Random(3),
+    )
+    assert len(set(periodic.final_state)) == 2
+    assert max(
+        dependency_lengths(
+            num_variables=periodic.num_variables,
+            operations=periodic.operations,
+        )
+    ) >= 45
 
 
 def test_uninitialized_reference_is_rejected() -> None:

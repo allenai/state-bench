@@ -4,13 +4,15 @@ from __future__ import annotations
 
 import json
 from collections import defaultdict
+from itertools import batched
 from pathlib import Path
 from typing import Any
 
 import yaml
 
-from state_bench.config import LoadedExperiment
+from state_bench.config import LoadedExperiment, TokenStratificationSpec
 from state_bench.io import read_jsonl, sha256_file
+from state_bench.stats import TokenizerLike, load_tokenizer
 
 
 def stage_hub_repository(
@@ -28,6 +30,12 @@ def stage_hub_repository(
     data_dir.mkdir()
 
     configs: list[dict[str, Any]] = []
+    token_strata = loaded.spec.huggingface.token_strata
+    tokenizer = (
+        load_tokenizer(token_strata.tokenizer, revision=token_strata.revision)
+        if token_strata is not None
+        else None
+    )
     if loaded.spec.huggingface.include_canonical_config:
         configs.append(
             _stage_config(
@@ -45,6 +53,8 @@ def stage_hub_repository(
                     data_dir,
                     config_dir.name,
                     shard_size=loaded.spec.output.shard_size,
+                    token_strata=token_strata,
+                    tokenizer=tokenizer,
                 )
             )
 
@@ -120,19 +130,17 @@ def validate_hub_repository(repo_dir: Path) -> dict[str, Any]:
         count_key = f"{config_name}/{split}"
         counts[count_key] = counts.get(count_key, 0) + len(records)
         examples_by_config_split.setdefault(key, set()).update(example_ids)
-        semantics_by_split[split].update(str(record["instance_id"]) for record in records)
+        semantics_by_split[_base_split(split)].update(str(record["instance_id"]) for record in records)
         if config_name in schemas and schemas[config_name] != table.schema:
             raise ValueError(f"schema mismatch across splits for config {config_name!r}")
         schemas[config_name] = table.schema
 
     if any(key[0] == "canonical" for key in examples_by_config_split):
         canonical = {
-            split: ids
-            for (config, split), ids in examples_by_config_split.items()
-            if config == "canonical"
+            split: ids for (config, split), ids in examples_by_config_split.items() if config == "canonical"
         }
         for (config, split), ids in examples_by_config_split.items():
-            if config != "canonical" and not ids <= canonical.get(split, set()):
+            if config != "canonical" and not ids <= canonical.get(_base_split(split), set()):
                 raise ValueError(f"rendered config {config!r} contains IDs absent from canonical/{split}")
 
     overlap: dict[str, int] = {}
@@ -149,16 +157,21 @@ def push_hub_repository(
     repo_id: str,
     private: bool,
     dry_run: bool,
+    sync: bool = False,
     commit_message: str = "Upload state-bench dataset",
 ) -> dict[str, Any]:
-    """Upload a staged repository; dry-run performs no authentication or writes."""
+    """Upload a staged repository; optionally replace the remote file tree."""
 
     if not repo_id or "/" not in repo_id:
         raise ValueError("repo_id must have the form namespace/name")
     files = [path for path in sorted(repo_dir.rglob("*")) if path.is_file()]
+    if sync:
+        _validate_sync_source(repo_dir, files)
     plan = {
         "repo_id": repo_id,
         "private": private,
+        "sync": sync,
+        "delete_patterns": ["*"] if sync else [],
         "files": [str(path.relative_to(repo_dir)) for path in files],
     }
     if dry_run:
@@ -179,8 +192,19 @@ def push_hub_repository(
         repo_id=repo_id,
         repo_type="dataset",
         commit_message=commit_message,
+        delete_patterns="*" if sync else None,
     )
     return plan
+
+
+def _validate_sync_source(repo_dir: Path, files: list[Path]) -> None:
+    relative_files = {str(path.relative_to(repo_dir)) for path in files}
+    required = {"README.md", "generation.yaml", "manifest.json"}
+    missing = sorted(required - relative_files)
+    if missing:
+        raise ValueError(f"sync requires a complete staged repository; missing files: {missing}")
+    if not any(path.startswith("data/") and path.endswith(".parquet") for path in relative_files):
+        raise ValueError("sync requires a complete staged repository with Parquet data files")
 
 
 def _stage_config(
@@ -189,6 +213,8 @@ def _stage_config(
     config_name: str,
     *,
     shard_size: int,
+    token_strata: TokenStratificationSpec | None = None,
+    tokenizer: TokenizerLike | None = None,
 ) -> dict[str, Any]:
     if not source_dir.is_dir():
         raise FileNotFoundError(f"missing generated config directory: {source_dir}")
@@ -197,13 +223,39 @@ def _stage_config(
     data_files: list[dict[str, str]] = []
     for jsonl_path in sorted(source_dir.glob("*.jsonl")):
         split = jsonl_path.stem
-        _jsonl_to_parquet_shards(
-            jsonl_path,
-            destination,
-            split=split,
-            shard_size=shard_size,
+        if token_strata is None:
+            _jsonl_to_parquet_shards(
+                jsonl_path,
+                destination,
+                split=split,
+                shard_size=shard_size,
+            )
+            data_files.append({"split": split, "path": f"data/{config_name}/{split}-*.parquet"})
+            continue
+        if tokenizer is None:
+            raise ValueError("tokenizer is required when token strata are configured")
+        records_by_stratum = _partition_records_by_token_stratum(
+            read_jsonl(jsonl_path),
+            spec=token_strata,
+            tokenizer=tokenizer,
         )
-        data_files.append({"split": split, "path": f"data/{config_name}/{split}-*.parquet"})
+        for stratum in token_strata.ranges:
+            records = records_by_stratum[stratum.name]
+            if not records:
+                continue
+            stratified_split = f"{split}__{stratum.name}"
+            _records_to_parquet_shards(
+                records,
+                destination,
+                split=stratified_split,
+                shard_size=shard_size,
+            )
+            data_files.append(
+                {
+                    "split": stratified_split,
+                    "path": f"data/{config_name}/{stratified_split}-*.parquet",
+                }
+            )
     if not data_files:
         raise FileNotFoundError(f"no generated splits found under {source_dir}")
     return {"config_name": config_name, "data_files": data_files}
@@ -216,19 +268,73 @@ def _jsonl_to_parquet_shards(
     split: str,
     shard_size: int,
 ) -> None:
+    records = read_jsonl(source)
+    if not records:
+        raise ValueError(f"cannot infer a Parquet schema from empty split: {source}")
+    _records_to_parquet_shards(records, destination, split=split, shard_size=shard_size)
+
+
+def _records_to_parquet_shards(
+    records: list[dict[str, Any]],
+    destination: Path,
+    *,
+    split: str,
+    shard_size: int,
+) -> None:
     _require_hub_dependencies()
     import pyarrow as pa
     import pyarrow.parquet as parquet
 
-    records = read_jsonl(source)
-    if not records:
-        raise ValueError(f"cannot infer a Parquet schema from empty split: {source}")
     num_shards = (len(records) + shard_size - 1) // shard_size
     for shard_index in range(num_shards):
         chunk = records[shard_index * shard_size : (shard_index + 1) * shard_size]
         table = _arrow_table(pa, chunk)
         name = f"{split}-{shard_index:05d}-of-{num_shards:05d}.parquet"
         parquet.write_table(table, destination / name, compression="zstd")
+
+
+def _partition_records_by_token_stratum(
+    records: list[dict[str, Any]],
+    *,
+    spec: TokenStratificationSpec,
+    tokenizer: TokenizerLike,
+) -> dict[str, list[dict[str, Any]]]:
+    """Annotate and partition rendered rows using exact tokenizer lengths."""
+
+    result = {stratum.name: [] for stratum in spec.ranges}
+    for record_batch in batched(records, spec.batch_size, strict=False):
+        batch = list(record_batch)
+        texts = []
+        for record in batch:
+            if "prefix" not in record:
+                raise ValueError("token stratification requires a prefix field")
+            text = str(record["prefix"])
+            if spec.field == "prefix+completion":
+                if "completion" not in record:
+                    raise ValueError("prefix+completion stratification requires a completion field")
+                text += spec.joiner + str(record["completion"])
+            texts.append(text)
+        encoded = tokenizer(
+            texts,
+            add_special_tokens=spec.add_special_tokens,
+            padding=False,
+            truncation=False,
+        )
+        lengths = [len(token_ids) for token_ids in encoded["input_ids"]]
+        for record, token_length in zip(batch, lengths, strict=True):
+            stratum = next(
+                item
+                for item in spec.ranges
+                if token_length >= item.min_tokens
+                and (item.max_tokens is None or token_length < item.max_tokens)
+            )
+            annotated = {**record, "token_length": token_length, "token_stratum": stratum.name}
+            result[stratum.name].append(annotated)
+    return result
+
+
+def _base_split(split: str) -> str:
+    return split.partition("__")[0]
 
 
 def _arrow_table(pa: Any, records: list[dict[str, Any]]) -> Any:
@@ -270,6 +376,21 @@ def _arrow_table(pa: Any, records: list[dict[str, Any]]) -> Any:
 def _dataset_card(*, metadata: dict[str, Any], loaded: LoadedExperiment) -> str:
     frontmatter = yaml.safe_dump(metadata, sort_keys=False, allow_unicode=True).strip()
     formatter_names = ", ".join(formatter.name for formatter in loaded.formatters)
+    strata = loaded.spec.huggingface.token_strata
+    strata_description = ""
+    if strata is not None:
+        interval_text = ", ".join(
+            f"`{item.name}`=[{item.min_tokens:,}, "
+            f"{item.max_tokens if item.max_tokens is not None else 'infinity'})"
+            for item in strata.ranges
+        )
+        strata_description = f"""
+
+Rendered configs are partitioned into tokenizer-length splits named
+`<split>__<stratum>` using `{strata.tokenizer}` over `{strata.field}`. The
+half-open strata are {interval_text}. Each row records its exact `token_length`
+and `token_stratum`. The canonical config retains the unstratified base splits.
+"""
     return f"""---
 {frontmatter}
 ---
@@ -287,6 +408,7 @@ a zero-based `correct_choice_index`, its complexity class, and generation parame
 The `canonical` config contains formatter-independent operation traces and final
 states. See `generation.yaml`, `formats/`, and `manifest.json` for exact
 reproduction metadata.
+{strata_description}
 
 Reference assignments use eager copy semantics: assigning one variable from
 another copies its value at that point in the trace and does not create an alias.

@@ -30,6 +30,7 @@ dev = [
 [project.scripts]
 state-bench = "state_bench.cli:main"
 state-bench-stats = "state_bench.stats:main"
+state-bench-token-histogram = "state_bench.token_histogram:main"
 
 [build-system]
 requires = ["hatchling"]

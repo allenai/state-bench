@@ -76,6 +76,11 @@ def build_parser() -> argparse.ArgumentParser:
     visibility.add_argument("--public", action="store_true")
     visibility.add_argument("--private", action="store_true")
     push.add_argument("--dry-run", action="store_true")
+    push.add_argument(
+        "--sync",
+        action="store_true",
+        help="Delete remote files absent from the staged repository before uploading.",
+    )
     push.add_argument("--commit-message", default="Upload state-bench dataset")
     return parser
 
@@ -164,6 +169,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             repo_id=repo_id,
             private=private,
             dry_run=args.dry_run,
+            sync=args.sync,
             commit_message=args.commit_message,
         )
         print(json.dumps(plan, indent=2, sort_keys=True))

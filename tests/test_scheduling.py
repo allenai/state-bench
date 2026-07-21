@@ -78,8 +78,25 @@ def test_too_small_sample_budget_is_rejected() -> None:
 def test_long_context_experiment_config_loads() -> None:
     loaded = load_experiment(ROOT / "configs/experiments/long-context.yaml")
     assert loaded.spec.dataset.name == "state-tracking-long-context-v1"
+    assert loaded.spec.splits["test"].samples_per_condition == 380
     assert len(loaded.spec.generation.conditions) == 3
-    assert loaded.spec.generation.conditions[0].formatters is None
+    r_trivial, aperiodic, periodic = loaded.spec.generation.conditions
+    assert r_trivial.formatters is None
+    assert max(r_trivial.filler.proportions) == 0.99995
+    for condition in (aperiodic, periodic):
+        assert isinstance(condition.extra_assignments, LogSpacedAssignmentSchedule)
+        assert condition.extra_assignments.max == 192_000
+        assert condition.extra_assignments.sample_decay == 1.0
+        assert condition.extra_assignments.jitter_fraction == 0.0
+        assert condition.extra_assignments.min_samples_per_bucket == 20
+    token_strata = loaded.spec.huggingface.token_strata
+    assert token_strata is not None
+    assert [item.max_tokens for item in token_strata.ranges] == [
+        100_000,
+        500_000,
+        1_000_000,
+        None,
+    ]
 
 
 def test_filler_plan_preserves_budget_and_evenly_covers_axis() -> None:

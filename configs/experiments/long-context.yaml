@@ -9,8 +9,11 @@ splits:
   test:
     # This is a fixed budget for each complexity/variable-count pair. It is
     # distributed across the log-spaced buckets below rather than repeated at
-    # every depth.
-    samples_per_condition: 6000
+    # every depth. Uniform log-bucket weights provide comparable coverage from
+    # short traces through the roughly one-million-token tail. With 19 target
+    # assignment buckets, 380 rows gives exactly 20 samples per target for each
+    # complexity/variable-count pair.
+    samples_per_condition: 380
 
 generation:
   query_mode: all
@@ -28,7 +31,7 @@ generation:
       # The fixed condition budget is spread across the zero-padding baseline
       # and every nonzero proportion/distraction combination.
       filler:
-        proportions: [0.0, 0.9, 0.99, 0.999]
+        proportions: [0.0, 0.9, 0.99, 0.999, 0.99995]
         distraction_levels: [easy, medium, hard]
     - complexity: aperiodic
       num_variables: [2, 4, 6]
@@ -36,22 +39,22 @@ generation:
       extra_assignments:
         distribution: log-spaced
         min: 1
-        max: 24000
+        max: 192000
         growth_factor: 2.0
-        sample_decay: 0.65
-        jitter_fraction: 0.10
-        min_samples_per_bucket: 8
+        sample_decay: 1.0
+        jitter_fraction: 0.0
+        min_samples_per_bucket: 20
     - complexity: periodic
       num_variables: [2, 4, 6]
       num_values: 10
       extra_assignments:
         distribution: log-spaced
         min: 1
-        max: 24000
+        max: 192000
         growth_factor: 2.0
-        sample_decay: 0.65
-        jitter_fraction: 0.10
-        min_samples_per_bucket: 8
+        sample_decay: 1.0
+        jitter_fraction: 0.0
+        min_samples_per_bucket: 20
 
 formatters:
   - config: ../formats/integer-code.yaml
@@ -64,7 +67,9 @@ output:
   local_format: jsonl
   include_canonical_trace: true
   include_final_state: true
-  shard_size: 100000
+  # Long rows are sharded much more finely to keep Parquet conversion and
+  # selective downloads manageable.
+  shard_size: 50
   multiple_choice:
     num_distractors: 4
     shuffle_choices: true
@@ -73,6 +78,17 @@ huggingface:
   include_canonical_config: true
   config_naming: "{formatter}--{complexity}"
   data_format: parquet
+  # Tokenization happens once during Hub staging. Rendered configs are exposed
+  # as independently loadable splits; bounds are half-open [min, max).
+  token_strata:
+    tokenizer: allenai/Olmo-3-1025-7B
+    field: prefix
+    batch_size: 1
+    ranges:
+      - {name: tokens_0_100k, min_tokens: 0, max_tokens: 100000}
+      - {name: tokens_100k_500k, min_tokens: 100000, max_tokens: 500000}
+      - {name: tokens_500k_1m, min_tokens: 500000, max_tokens: 1000000}
+      - {name: tokens_1m_plus, min_tokens: 1000000, max_tokens: null}
   repository:
     repo_id: jacksonp-ai2/state-bench-lc
     private: true

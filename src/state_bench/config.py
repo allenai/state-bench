@@ -130,8 +130,7 @@ class GenerationSpec(StrictModel):
                     and condition.extra_assignments.min < 1
                 ):
                     raise ValueError(
-                        f"strict {condition.complexity.value} conditions need at least one extra "
-                        "assignment"
+                        f"strict {condition.complexity.value} conditions need at least one extra assignment"
                     )
                 if (
                     self.require_strict_witness
@@ -186,10 +185,52 @@ class HubCardSpec(StrictModel):
     tags: list[str] = ["state-tracking", "formal-languages", "llm-evaluation"]
 
 
+class TokenStratumSpec(StrictModel):
+    """One half-open token-length interval used as a published Hub split."""
+
+    name: str = Field(pattern=r"^[a-z0-9][a-z0-9_]*$")
+    min_tokens: int = Field(ge=0)
+    max_tokens: PositiveInt | None = None
+
+    @model_validator(mode="after")
+    def ordered(self) -> TokenStratumSpec:
+        if self.max_tokens is not None and self.max_tokens <= self.min_tokens:
+            raise ValueError("max_tokens must be greater than min_tokens")
+        return self
+
+
+class TokenStratificationSpec(StrictModel):
+    """Tokenizer-dependent rendered-data splits created during Hub staging."""
+
+    tokenizer: str = Field(min_length=1)
+    revision: str | None = None
+    field: Literal["prefix", "prefix+completion"] = "prefix"
+    joiner: str = ""
+    add_special_tokens: bool = False
+    batch_size: PositiveInt = 1
+    ranges: list[TokenStratumSpec]
+
+    @model_validator(mode="after")
+    def contiguous_ranges(self) -> TokenStratificationSpec:
+        if not self.ranges:
+            raise ValueError("token strata ranges must not be empty")
+        if len({item.name for item in self.ranges}) != len(self.ranges):
+            raise ValueError("token strata names must be unique")
+        if self.ranges[0].min_tokens != 0:
+            raise ValueError("token strata must start at zero")
+        for left, right in zip(self.ranges, self.ranges[1:], strict=False):
+            if left.max_tokens is None or left.max_tokens != right.min_tokens:
+                raise ValueError("token strata must be ordered, contiguous, and non-overlapping")
+        if self.ranges[-1].max_tokens is not None:
+            raise ValueError("the final token stratum must have max_tokens: null")
+        return self
+
+
 class HuggingFaceSpec(StrictModel):
     include_canonical_config: bool = True
     config_naming: str = "{formatter}--{complexity}"
     data_format: Literal["parquet"] = "parquet"
+    token_strata: TokenStratificationSpec | None = None
     repository: HubRepositorySpec = HubRepositorySpec()
     card: HubCardSpec = HubCardSpec()
 
@@ -383,9 +424,7 @@ def _validate_formatter_capacity(
     num_distractors = experiment.output.multiple_choice.num_distractors
     for condition in experiment.generation.conditions:
         for num_variables in condition.num_variables:
-            queried_variables = (
-                num_variables if experiment.generation.query_mode is QueryMode.ALL else 1
-            )
+            queried_variables = num_variables if experiment.generation.query_mode is QueryMode.ALL else 1
             available_wrong_answers = condition.num_values**queried_variables - 1
             if available_wrong_answers < num_distractors:
                 raise ValueError(
@@ -402,9 +441,7 @@ def _validate_formatter_capacity(
         if not selected_conditions:
             continue
         max_variables = max(
-            num_variables
-            for condition in selected_conditions
-            for num_variables in condition.num_variables
+            num_variables for condition in selected_conditions for num_variables in condition.num_variables
         )
         max_values = max(condition.num_values for condition in selected_conditions)
         if len(formatter.vocabulary.variables) < max_variables:

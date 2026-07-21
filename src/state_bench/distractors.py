@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import random
+from math import perm
 
 from state_bench.model import StateTrackingInstance
 
@@ -13,20 +14,34 @@ def generate_incorrect_states(
     num_distractors: int,
     rng: random.Random,
 ) -> tuple[tuple[int, ...], ...]:
-    """Return unique states whose queried values differ from the correct answer."""
+    """Return unique wrong states with the correct answer's equality pattern.
+
+    Distractors are injective relabelings of the queried values. Thus two
+    queried variables are equal in every distractor exactly when they are equal
+    in the correct answer. This prevents the shape of an answer (for example,
+    all queried variables sharing one value) from identifying the correct
+    multiple-choice option without reading the trace.
+    """
 
     if num_distractors < 0:
         raise ValueError("num_distractors must be non-negative")
-    available = instance.num_values ** len(instance.query) - 1
+    correct_answer = tuple(instance.final_state[variable] for variable in instance.query)
+    distinct_values = tuple(dict.fromkeys(correct_answer))
+    available = perm(instance.num_values, len(distinct_values)) - 1
     if num_distractors > available:
         raise ValueError(
-            f"requested {num_distractors} distractors, but only {available} wrong answers exist"
+            f"requested {num_distractors} distractors, but only {available} equality-pattern-"
+            "preserving wrong answers exist"
         )
 
-    correct_answer = tuple(instance.final_state[variable] for variable in instance.query)
     wrong_answers: set[tuple[int, ...]] = set()
     while len(wrong_answers) < num_distractors:
-        candidate = tuple(rng.randrange(instance.num_values) for _ in instance.query)
+        replacement_values = rng.sample(
+            range(instance.num_values),
+            len(distinct_values),
+        )
+        replacements = dict(zip(distinct_values, replacement_values, strict=True))
+        candidate = tuple(replacements[value] for value in correct_answer)
         if candidate != correct_answer:
             wrong_answers.add(candidate)
 
