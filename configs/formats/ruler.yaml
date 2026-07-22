@@ -1,0 +1,80 @@
+schema_version: 1
+name: ruler
+renderer: template
+filler_corpus_path: ../corpora/ruler-essay.txt
+
+vocabulary:
+  variable_selection: sample-without-replacement
+  value_selection: random-seven-digit
+  variables:
+    - acorn
+    - amber
+    - ancient
+    - anchor
+    - apple
+    - badger
+    - bright
+    - canyon
+    - cedar
+    - clever
+    - comet
+    - compass
+    - coral
+    - crimson
+    - desert
+    - eager
+    - ember
+    - falcon
+    - forest
+    - gentle
+    - glacier
+    - golden
+    - harbor
+    - hollow
+    - island
+    - ivory
+    - lantern
+    - meadow
+    - mirror
+    - mountain
+    - ocean
+    - orchard
+    - pebble
+    - planet
+    - quiet
+    - rapid
+    - river
+    - saddle
+    - shadow
+    - silver
+    - sturdy
+    - summit
+    - thunder
+    - valley
+    - vivid
+    - warm
+    - wild
+    - willow
+    - window
+  values: []
+
+templates:
+  task_description: >-
+    Some special magic numbers are hidden within the following text. Make sure to
+    memorize it. I will quiz you about the numbers afterward.
+  assign_constant: "One of the special magic numbers for $target is: $value."
+  assign_reference: >-
+    The special magic number for $target becomes the number currently assigned to $source.
+  answer_prompt: >-
+    What are all the special magic numbers for $query_variables mentioned in the provided text?
+  state_assertion: "$variable is $value."
+  filler_easy: "$filler_text"
+  filler_medium: "$filler_text"
+  filler_hard: "$filler_text"
+
+layout:
+  prompt_blocks: [task_description, program, answer_prompt]
+  block_separator: "\n\n"
+  instruction_separator: "\n"
+  completion_separator: " "
+  trailing_newline: false

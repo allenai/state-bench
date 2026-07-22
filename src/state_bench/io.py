@@ -15,7 +15,8 @@ from tqdm.auto import tqdm
 
 from state_bench.config import LoadedExperiment, condition_uses_formatter
 from state_bench.distractors import generate_incorrect_states
-from state_bench.generation import generate_instance
+from state_bench.generation import derive_instance, generate_periodic_source
+from state_bench.model import Complexity
 from state_bench.rendering import render_instance
 from state_bench.scheduling import build_assignment_plan, build_filler_plan
 from state_bench.semantics import dependency_summary
@@ -40,7 +41,8 @@ def build_dataset(loaded: LoadedExperiment, *, output_dir: Path | None = None) -
     canonical_handles: dict[str, Any] = {}
     rendered_handles: dict[tuple[str, str], Any] = {}
     total_examples = sum(
-        split.samples_per_condition
+        len(Complexity)
+        * split.samples_per_condition
         * sum(len(condition.num_variables) for condition in spec.generation.conditions)
         for split in spec.splits.values()
     )
@@ -62,9 +64,10 @@ def build_dataset(loaded: LoadedExperiment, *, output_dir: Path | None = None) -
                 hub_config_name(
                     spec.huggingface.config_naming,
                     formatter=formatter.name,
-                    complexity=condition.complexity.value,
+                    complexity=complexity.value,
                 )
                 for condition in spec.generation.conditions
+                for complexity in Complexity
                 if condition_uses_formatter(condition, formatter.name)
             }
             for config_name in sorted(config_names):
@@ -79,7 +82,7 @@ def build_dataset(loaded: LoadedExperiment, *, output_dir: Path | None = None) -
                 for num_variables in condition.num_variables:
                     progress.set_postfix(
                         split=split_name,
-                        complexity=condition.complexity.value,
+                        source="periodic",
                         variables=num_variables,
                         refresh=False,
                     )
@@ -112,10 +115,10 @@ def build_dataset(loaded: LoadedExperiment, *, output_dir: Path | None = None) -
                     for sample_index, (plan_item, filler_item) in enumerate(
                         zip(assignment_plan, filler_plan, strict=True)
                     ):
-                        example_id = _example_id(
+                        source_example_id = _example_id(
                             dataset=spec.dataset.name,
                             split=split_name,
-                            complexity=condition.complexity.value,
+                            complexity="periodic-source",
                             num_variables=num_variables,
                             num_values=condition.num_values,
                             condition_index=condition_index,
@@ -124,9 +127,8 @@ def build_dataset(loaded: LoadedExperiment, *, output_dir: Path | None = None) -
                             filler_proportion=filler_item.proportion,
                             filler_distraction=filler_item.distraction,
                         )
-                        semantic_seed = derive_seed(spec.dataset.seed, "semantic", example_id)
-                        instance = generate_instance(
-                            complexity=condition.complexity,
+                        semantic_seed = derive_seed(spec.dataset.seed, "semantic", source_example_id)
+                        source = generate_periodic_source(
                             num_variables=num_variables,
                             num_values=condition.num_values,
                             min_extra_assignments=plan_item.min_extra_assignments,
@@ -138,62 +140,79 @@ def build_dataset(loaded: LoadedExperiment, *, output_dir: Path | None = None) -
                             periodic_constant_probability=(spec.generation.periodic_constant_probability),
                             rng=random.Random(semantic_seed),
                         )
-                        canonical_record = {
-                            "example_id": example_id,
-                            **instance.to_record(),
-                            **dependency_summary(instance).to_record(),
-                            "num_extra_assignments": len(instance.operations) - num_variables,
-                            "target_extra_assignments": plan_item.target_extra_assignments,
-                            "filler_proportion": filler_item.proportion,
-                            "filler_distraction": filler_item.distraction,
-                        }
-                        write_json_line(canonical_handles[split_name], canonical_record)
-                        counts[f"canonical/{split_name}"] += 1
-                        unique_semantics[f"canonical/{split_name}"].add(instance.instance_id)
-                        split_semantics[split_name].add(instance.instance_id)
+                        for complexity in Complexity:
+                            instance = derive_instance(source, complexity=complexity)
+                            example_id = _derived_example_id(source_example_id, complexity)
+                            canonical_record = {
+                                "example_id": example_id,
+                                "source_example_id": source_example_id,
+                                "source_instance_id": source.instance_id,
+                                **instance.to_record(),
+                                **dependency_summary(instance).to_record(),
+                                "num_extra_assignments": len(instance.operations) - num_variables,
+                                "target_extra_assignments": plan_item.target_extra_assignments,
+                                "filler_proportion": filler_item.proportion,
+                                "filler_distraction": filler_item.distraction,
+                            }
+                            write_json_line(canonical_handles[split_name], canonical_record)
+                            counts[f"canonical/{split_name}"] += 1
+                            unique_semantics[f"canonical/{split_name}"].add(instance.instance_id)
+                            split_semantics[split_name].add(instance.instance_id)
 
-                        for formatter in loaded.formatters:
-                            if not condition_uses_formatter(condition, formatter.name):
-                                continue
-                            config_name = hub_config_name(
-                                spec.huggingface.config_naming,
-                                formatter=formatter.name,
-                                complexity=condition.complexity.value,
-                            )
-                            surface_seed = derive_seed(
-                                spec.dataset.seed,
-                                "surface",
-                                example_id,
-                                formatter.name,
-                            )
-                            incorrect_states = generate_incorrect_states(
-                                instance,
-                                num_distractors=spec.output.multiple_choice.num_distractors,
-                                rng=random.Random(derive_seed(spec.dataset.seed, "distractors", example_id)),
-                            )
-                            rendered = render_instance(
-                                instance,
-                                formatter,
-                                rng=random.Random(surface_seed),
-                                incorrect_states=incorrect_states,
-                                shuffle_choices=spec.output.multiple_choice.shuffle_choices,
-                                filler_proportion=filler_item.proportion,
-                                filler_distraction=filler_item.distraction,
-                            )
-                            rendered_record = {"example_id": example_id, **rendered.to_record()}
-                            rendered_record["num_extra_assignments"] = (
-                                len(instance.operations) - num_variables
-                            )
-                            rendered_record["target_extra_assignments"] = plan_item.target_extra_assignments
-                            if spec.output.include_canonical_trace:
-                                rendered_record["operations"] = canonical_record["operations"]
-                                rendered_record["query"] = canonical_record["query"]
-                            if spec.output.include_final_state:
-                                rendered_record["final_state"] = canonical_record["final_state"]
-                            write_json_line(rendered_handles[(config_name, split_name)], rendered_record)
-                            counts[f"{config_name}/{split_name}"] += 1
-                            unique_semantics[f"{config_name}/{split_name}"].add(instance.instance_id)
-                        progress.update()
+                            for formatter in loaded.formatters:
+                                if not condition_uses_formatter(condition, formatter.name):
+                                    continue
+                                config_name = hub_config_name(
+                                    spec.huggingface.config_naming,
+                                    formatter=formatter.name,
+                                    complexity=complexity.value,
+                                )
+                                surface_seed = derive_seed(
+                                    spec.dataset.seed,
+                                    "surface",
+                                    source_example_id,
+                                    formatter.name,
+                                )
+                                incorrect_states = generate_incorrect_states(
+                                    instance,
+                                    num_distractors=spec.output.multiple_choice.num_distractors,
+                                    rng=random.Random(
+                                        derive_seed(spec.dataset.seed, "distractors", example_id)
+                                    ),
+                                )
+                                rendered = render_instance(
+                                    instance,
+                                    formatter,
+                                    rng=random.Random(surface_seed),
+                                    incorrect_states=incorrect_states,
+                                    shuffle_choices=spec.output.multiple_choice.shuffle_choices,
+                                    filler_proportion=filler_item.proportion,
+                                    filler_distraction=filler_item.distraction,
+                                )
+                                rendered_record = {
+                                    "example_id": example_id,
+                                    "source_example_id": source_example_id,
+                                    "source_instance_id": source.instance_id,
+                                    **rendered.to_record(),
+                                    "num_extra_assignments": len(instance.operations) - num_variables,
+                                    "target_extra_assignments": plan_item.target_extra_assignments,
+                                }
+                                if spec.output.include_canonical_trace:
+                                    rendered_record["operations"] = canonical_record["operations"]
+                                    rendered_record["source_operations"] = [
+                                        operation.to_record() for operation in source.operations
+                                    ]
+                                    rendered_record["query"] = canonical_record["query"]
+                                if spec.output.include_final_state:
+                                    rendered_record["final_state"] = canonical_record["final_state"]
+                                write_json_line(
+                                    rendered_handles[(config_name, split_name)], rendered_record
+                                )
+                                counts[f"{config_name}/{split_name}"] += 1
+                                unique_semantics[f"{config_name}/{split_name}"].add(
+                                    instance.instance_id
+                                )
+                            progress.update()
     finally:
         progress.close()
         for handle in (*canonical_handles.values(), *rendered_handles.values()):
@@ -287,6 +306,12 @@ def _example_id(
     if filler_proportion != 0 or filler_distraction is not None:
         value += f"\0{filler_proportion:.17g}\0{filler_distraction or 'none'}"
     return hashlib.sha256(value.encode()).hexdigest()[:24]
+
+
+def _derived_example_id(source_example_id: str, complexity: Complexity) -> str:
+    """Give each family row a unique ID while preserving its source linkage."""
+
+    return hashlib.sha256(f"{source_example_id}\0{complexity.value}".encode()).hexdigest()[:24]
 
 
 def _split_overlap(split_semantics: dict[str, set[str]]) -> dict[str, int]:

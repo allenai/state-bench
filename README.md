@@ -4,11 +4,16 @@ Generate reproducible state-tracking evaluations from canonical assignment
 traces, render the same traces into multiple surface forms, and stage complete
 Hugging Face dataset repositories.
 
-The semantic families are ordered by increasing state-tracking complexity:
+Every sample begins as one periodic source trace. The two simpler families are
+derived from that exact trace, preserving assignment count, query, formatting
+choices, and padding condition:
 
-- `r-trivial`: every variable receives one constant assignment.
-- `aperiodic`: variables can be overwritten with constants.
-- `periodic`: assignments may copy the current value of another variable.
+- `periodic`: the source trace, including assignments that copy the current
+  value of another variable.
+- `aperiodic`: every reference is replaced by the source variable's value at
+  that point in the source trace.
+- `r-trivial`: every reference is replaced by the first value ever assigned to
+  its target variable.
 
 Reference assignments use eager copy semantics. `a <- b` copies the value of
 `b` at that point; it does not create a persistent alias.
@@ -57,14 +62,6 @@ generation:
   distinct_initial_values: false
   periodic_constant_probability: 0.1
   conditions:
-    - complexity: r-trivial
-      num_variables: [2, 4, 6]
-      num_values: 10
-      extra_assignments: {min: 0, max: 0}
-    - complexity: aperiodic
-      num_variables: [2, 4, 6]
-      num_values: 10
-      extra_assignments: {min: 1, max: 20}
     - complexity: periodic
       num_variables: [2, 4, 6]
       num_values: 10
@@ -76,9 +73,12 @@ formatters:
   - config: ../formats/spreadsheet-cells.yaml
   - config: ../formats/status-lights.yaml
   - config: ../formats/people-in-rooms.yaml
+  - config: ../formats/ruler.yaml
 ```
 
-Periodic generation is dependency- and value-biased: copy operations extend
+Generation conditions always describe periodic sources; each scheduled source
+automatically emits linked periodic, aperiodic, and r-trivial rows. Periodic
+generation is dependency- and value-biased: copy operations extend
 the deepest currently live provenance chain into one of the shallowest
 variables, and every generated update changes its target's value. Operations
 preserve the initial number of distinct live values whenever possible so one
@@ -123,22 +123,24 @@ generation:
 ```
 
 This creates target buckets `1, 2, 4, ..., 4096`. The
-`samples_per_condition` value remains the total budget for each
-complexity/variable-count pair; it is not generated separately at every depth.
+`samples_per_condition` value remains the total periodic-source budget for each
+source-condition/variable-count pair; it is not generated separately at every
+depth. Each source sample produces one row in every complexity class.
 Bucket weights decay by `sample_decay`, and `min_samples_per_bucket` guarantees
 coverage of the longest contexts. `jitter_fraction` samples nearby assignment
 counts rather than putting every row at the exact bucket center. Set
 `sample_decay: 1.0` for uniform sampling across the log-spaced target buckets.
 
-The provided long-context experiment uses 380 samples per
-complexity/variable-count condition, uniform weights across 19 assignment
-buckets up to 192,000 assignments, and exactly 20 samples at every target
-assignment length. It disables assignment jitter so those per-length sample
-counts are exact. Hub Parquet shards are capped at 50 long rows apiece.
-Its r-trivial condition reaches a comparable scale with a maximum filler
-proportion of `0.99995`.
+The provided long-context experiment separates a short padded source condition
+from an unpadded assignment-length sweep. The latter uses 380 source samples,
+uniform weights across 19 assignment buckets up to 192,000 assignments, and
+exactly 20 sources at every target assignment length. Both conditions emit all
+three complexity classes and every configured formatting. Hub Parquet shards
+are capped at 50 long rows apiece.
 
-Rows include `num_extra_assignments` and `target_extra_assignments` metadata.
+Rows include `source_example_id` and `source_instance_id` so every derived
+triplet can be joined directly. They also include `num_extra_assignments` and
+`target_extra_assignments` metadata.
 They also include final-state dependency provenance metadata:
 
 - `final_dependency_lengths` gives the copy-hop count for every variable in
@@ -148,11 +150,9 @@ They also include final-state dependency provenance metadata:
   `modal_dependency_length` summarize those per-variable lengths. If several
   lengths tie for the mode, the smallest is recorded.
 
-R-trivial traces cannot become long through reassignment because each variable
-is assigned exactly once. They can now be lengthened with surface-only filler;
-the provided long-context experiment varies filler for one-variable r-trivial
-examples in every configured format while retaining assignment-depth sweeps for
-aperiodic and periodic traces:
+The provided long-context experiment applies surface-only filler to short
+periodic sources, then uses the same padding schedule for the two derivations.
+It retains a separate assignment-depth sweep for long semantic traces:
 
 ```bash
 uv run state-bench config check configs/experiments/long-context.yaml
@@ -191,10 +191,10 @@ are no-op filler and how distracting those lines look:
 ```yaml
 generation:
   conditions:
-    - complexity: r-trivial
-      num_variables: [1]
+    - complexity: periodic
+      num_variables: [2]
       num_values: 10
-      extra_assignments: {min: 0, max: 0}
+      extra_assignments: {min: 1, max: 1}
       filler:
         proportions: [0.0, 0.9, 0.99, 0.999]
         distraction_levels: [easy, medium, hard]
@@ -211,8 +211,9 @@ lines without changing assignment order, the canonical trace, or the answer.
 `formatters` is an optional condition-level filter. Omit it to render the
 condition with every experiment formatter. Each selected formatter supplies
 `filler_easy`, `filler_medium`, and `filler_hard` templates. Filler templates
-may use `$variable`, `$value`, `$filler_index`, and the standard metadata
-placeholders.
+may use `$variable`, `$value`, `$filler_index`, `$filler_dots`, and the standard
+metadata placeholders. `$filler_dots` expands to a run of periods whose length
+is the mean rendered assignment width for that example.
 
 Rendered rows record `filler_proportion`, `actual_filler_proportion`,
 `filler_distraction`, and `num_filler_lines`. Preview an exact setting with:
@@ -264,7 +265,13 @@ assign_constant:
 
 Assignment templates support `$target`, `$value`, or `$source` as applicable.
 State assertions support `$variable` and `$value`. All templates may use
-`$num_variables`, `$num_values`, `$num_assignments`, and `$complexity`.
+`$num_variables`, `$num_values`, `$num_assignments`, `$complexity`,
+`$query_count`, and `$query_variables`.
+
+The RULER formatter sets `filler_corpus_path` to a local text corpus and uses
+`$filler_text` in its filler templates. Rendering samples one contiguous word
+stream at a random offset, splits it near the formatter's mean assignment
+width, and wraps to the start of the corpus when it reaches the end.
 
 ## Generate locally
 

@@ -4,7 +4,7 @@ import random
 
 import pytest
 
-from state_bench.generation import generate_instance
+from state_bench.generation import derive_instance, generate_instance
 from state_bench.model import AssignConstant, AssignVariable, Complexity, StateTrackingInstance
 from state_bench.semantics import dependency_lengths, dependency_summary, evaluate
 
@@ -39,21 +39,71 @@ def test_reference_is_eager_copy_not_alias() -> None:
 
 @pytest.mark.parametrize("complexity", list(Complexity))
 def test_generation_is_reproducible_and_self_consistent(complexity: Complexity) -> None:
-    kwargs = {
-        "complexity": complexity,
-        "num_variables": 4,
-        "num_values": 5,
-        "min_extra_assignments": 0 if complexity is Complexity.R_TRIVIAL else 1,
-        "max_extra_assignments": 0 if complexity is Complexity.R_TRIVIAL else 5,
-    }
-    first = generate_instance(**kwargs, rng=random.Random(7))
-    second = generate_instance(**kwargs, rng=random.Random(7))
+    first = generate_instance(
+        complexity=complexity,
+        num_variables=4,
+        num_values=5,
+        min_extra_assignments=1,
+        max_extra_assignments=5,
+        rng=random.Random(7),
+    )
+    second = generate_instance(
+        complexity=complexity,
+        num_variables=4,
+        num_values=5,
+        min_extra_assignments=1,
+        max_extra_assignments=5,
+        rng=random.Random(7),
+    )
     assert first == second
     assert first.final_state == evaluate(
         num_variables=first.num_variables,
         num_values=first.num_values,
         operations=first.operations,
     )
+
+
+def test_derived_families_resolve_periodic_references_from_one_source() -> None:
+    source = StateTrackingInstance.create(
+        complexity=Complexity.PERIODIC,
+        num_variables=2,
+        num_values=6,
+        operations=(
+            AssignConstant(0, 2),
+            AssignConstant(1, 5),
+            AssignVariable(0, 1),
+            AssignConstant(1, 3),
+            AssignVariable(1, 0),
+        ),
+        query=(0, 1),
+        final_state=(5, 5),
+    )
+
+    aperiodic = derive_instance(source, complexity=Complexity.APERIODIC)
+    r_trivial = derive_instance(source, complexity=Complexity.R_TRIVIAL)
+
+    assert aperiodic.operations == (
+        AssignConstant(0, 2),
+        AssignConstant(1, 5),
+        AssignConstant(0, 5),
+        AssignConstant(1, 3),
+        AssignConstant(1, 5),
+    )
+    assert r_trivial.operations == (
+        AssignConstant(0, 2),
+        AssignConstant(1, 5),
+        AssignConstant(0, 2),
+        AssignConstant(1, 5),
+        AssignConstant(1, 5),
+    )
+    assert aperiodic.final_state == source.final_state
+    assert r_trivial.final_state == (2, 5)
+    assert len(source.operations) == len(aperiodic.operations) == len(r_trivial.operations)
+    first_values: dict[int, int] = {}
+    for operation in r_trivial.operations:
+        assert isinstance(operation, AssignConstant)
+        first_values.setdefault(operation.target, operation.value)
+        assert operation.value == first_values[operation.target]
 
 
 def test_strict_family_witnesses() -> None:

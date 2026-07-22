@@ -30,10 +30,39 @@ def generate_instance(
     periodic_constant_probability: float = 0.1,
     rng: random.Random,
 ) -> StateTrackingInstance:
-    """Generate one evaluated instance satisfying its family constraints."""
+    """Generate a periodic source trace and return the requested derivation."""
+
+    source = generate_periodic_source(
+        num_variables=num_variables,
+        num_values=num_values,
+        min_extra_assignments=min_extra_assignments,
+        max_extra_assignments=max_extra_assignments,
+        query_mode=query_mode,
+        distinct_initial_values=distinct_initial_values,
+        require_strict_witness=require_strict_witness,
+        allow_self_reference=allow_self_reference,
+        periodic_constant_probability=periodic_constant_probability,
+        rng=rng,
+    )
+    return derive_instance(source, complexity=complexity)
+
+
+def generate_periodic_source(
+    *,
+    num_variables: int,
+    num_values: int,
+    min_extra_assignments: int = 0,
+    max_extra_assignments: int = 0,
+    query_mode: QueryMode = QueryMode.ALL,
+    distinct_initial_values: bool = False,
+    require_strict_witness: bool = True,
+    allow_self_reference: bool = False,
+    periodic_constant_probability: float = 0.1,
+    rng: random.Random,
+) -> StateTrackingInstance:
+    """Generate the periodic source-of-truth for a three-family trace set."""
 
     _validate_parameters(
-        complexity=complexity,
         num_variables=num_variables,
         num_values=num_values,
         min_extra_assignments=min_extra_assignments,
@@ -47,7 +76,7 @@ def generate_instance(
         num_variables=num_variables,
         num_values=num_values,
         distinct=distinct_initial_values,
-        require_diversity=complexity is Complexity.PERIODIC and require_strict_witness,
+        require_diversity=require_strict_witness,
         rng=rng,
     )
     variable_order = list(range(num_variables))
@@ -60,54 +89,41 @@ def generate_instance(
     target_periodic_diversity = len(set(state))
 
     extra_count = rng.randint(min_extra_assignments, max_extra_assignments)
-    if complexity is Complexity.APERIODIC:
-        non_witness_count = extra_count - 1 if require_strict_witness else extra_count
-        for _ in range(non_witness_count):
-            operation = AssignConstant(target=rng.randrange(num_variables), value=rng.randrange(num_values))
-            operations.append(operation)
-            state[operation.target] = operation.value
-        if require_strict_witness:
-            target = rng.randrange(num_variables)
-            value = rng.choice([value for value in range(num_values) if value != state[target]])
-            witness = AssignConstant(target=target, value=value)
-            operations.append(witness)
-            _apply(witness, state)
-    elif complexity is Complexity.PERIODIC:
-        remaining_count = extra_count
-        if require_strict_witness:
-            copy_candidates = _periodic_copy_candidates(
-                state=state,
-                desired_diversity=target_periodic_diversity,
-            )
-            diversity_preserving = [candidate for candidate in copy_candidates if candidate[2]]
-            witness = _choose_dependency_biased_copy(
-                diversity_preserving or copy_candidates,
-                dependency_depths=dependency_depths,
-                rng=rng,
-            )
-            operations.append(witness)
-            _apply(witness, state)
-            _apply_dependency(witness, dependency_depths)
-            remaining_count -= 1
-        for index in range(remaining_count):
-            operation = _value_aware_periodic_operation(
-                state=state,
-                dependency_depths=dependency_depths,
-                num_values=num_values,
-                allow_self_reference=allow_self_reference,
-                constant_probability=periodic_constant_probability,
-                desired_diversity=target_periodic_diversity,
-                remaining_after=remaining_count - index - 1,
-                rng=rng,
-            )
-            operations.append(operation)
-            _apply(operation, state)
-            _apply_dependency(operation, dependency_depths)
+    remaining_count = extra_count
+    if require_strict_witness:
+        copy_candidates = _periodic_copy_candidates(
+            state=state,
+            desired_diversity=target_periodic_diversity,
+        )
+        diversity_preserving = [candidate for candidate in copy_candidates if candidate[2]]
+        witness = _choose_dependency_biased_copy(
+            diversity_preserving or copy_candidates,
+            dependency_depths=dependency_depths,
+            rng=rng,
+        )
+        operations.append(witness)
+        _apply(witness, state)
+        _apply_dependency(witness, dependency_depths)
+        remaining_count -= 1
+    for index in range(remaining_count):
+        operation = _value_aware_periodic_operation(
+            state=state,
+            dependency_depths=dependency_depths,
+            num_values=num_values,
+            allow_self_reference=allow_self_reference,
+            constant_probability=periodic_constant_probability,
+            desired_diversity=target_periodic_diversity,
+            remaining_after=remaining_count - index - 1,
+            rng=rng,
+        )
+        operations.append(operation)
+        _apply(operation, state)
+        _apply_dependency(operation, dependency_depths)
 
     final_state = evaluate(num_variables=num_variables, num_values=num_values, operations=operations)
     query = _choose_query(num_variables=num_variables, query_mode=query_mode, rng=rng)
     return StateTrackingInstance.create(
-        complexity=complexity,
+        complexity=Complexity.PERIODIC,
         num_variables=num_variables,
         num_values=num_values,
         operations=tuple(operations),
@@ -116,9 +132,65 @@ def generate_instance(
     )
 
 
-def _validate_parameters(
+def derive_instance(
+    source: StateTrackingInstance,
     *,
     complexity: Complexity,
+) -> StateTrackingInstance:
+    """Derive a complexity variant without changing source trace length or query.
+
+    Aperiodic traces eagerly resolve every reference to the source variable's
+    value at that point while retaining literal assignments. R-trivial traces
+    replace every assignment after a target's first assignment with that
+    target's first value, regardless of whether the source assignment was a
+    literal or a reference.
+    """
+
+    if source.complexity is not Complexity.PERIODIC:
+        raise ValueError("derived instances require a periodic source")
+    if complexity is Complexity.PERIODIC:
+        return source
+
+    source_state: list[int | None] = [None] * source.num_variables
+    first_values: list[int | None] = [None] * source.num_variables
+    operations: list[Operation] = []
+    for operation in source.operations:
+        if isinstance(operation, AssignConstant):
+            source_value = operation.value
+        else:
+            source_value = source_state[operation.source]
+            if source_value is None:
+                raise ValueError(f"source variable {operation.source} is uninitialized")
+
+        if complexity is Complexity.APERIODIC:
+            derived = AssignConstant(target=operation.target, value=source_value)
+        else:
+            first_value = first_values[operation.target]
+            if first_value is None:
+                first_value = source_value
+                first_values[operation.target] = first_value
+            derived = AssignConstant(target=operation.target, value=first_value)
+
+        operations.append(derived)
+        source_state[operation.target] = source_value
+
+    operation_tuple = tuple(operations)
+    return StateTrackingInstance.create(
+        complexity=complexity,
+        num_variables=source.num_variables,
+        num_values=source.num_values,
+        operations=operation_tuple,
+        query=source.query,
+        final_state=evaluate(
+            num_variables=source.num_variables,
+            num_values=source.num_values,
+            operations=operation_tuple,
+        ),
+    )
+
+
+def _validate_parameters(
+    *,
     num_variables: int,
     num_values: int,
     min_extra_assignments: int,
@@ -135,13 +207,7 @@ def _validate_parameters(
         raise ValueError("distinct initial values require num_values >= num_variables")
     if not 0 <= periodic_constant_probability <= 1:
         raise ValueError("periodic constant probability must satisfy 0 <= probability <= 1")
-    if complexity is Complexity.R_TRIVIAL and max_extra_assignments != 0:
-        raise ValueError("r-trivial instances cannot have extra assignments")
-    if complexity is Complexity.APERIODIC and require_strict_witness and min_extra_assignments < 1:
-        raise ValueError("strict aperiodic instances require at least one extra assignment")
-    if complexity is Complexity.APERIODIC and require_strict_witness and num_values < 2:
-        raise ValueError("strict aperiodic instances require at least two values")
-    if complexity is Complexity.PERIODIC and require_strict_witness:
+    if require_strict_witness:
         if min_extra_assignments < 1:
             raise ValueError("strict periodic instances require at least one extra assignment")
         if num_variables < 2 or num_values < 2:

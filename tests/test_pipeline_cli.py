@@ -132,10 +132,14 @@ def test_build_preserves_ids_across_formatters(tmp_path: Path) -> None:
     canonical = read_jsonl(output / "canonical/train.jsonl")
     integer = read_jsonl(output / "rendered/integer-code--periodic/train.jsonl")
     cubes = read_jsonl(output / "rendered/cube-painting--periodic/train.jsonl")
-    assert len(canonical) == len(integer) == len(cubes) == 2
-    assert [row["example_id"] for row in canonical] == [row["example_id"] for row in integer]
+    assert len(canonical) == 6
+    assert len(integer) == len(cubes) == 2
+    periodic_canonical = [row for row in canonical if row["complexity"] == "periodic"]
+    assert [row["example_id"] for row in periodic_canonical] == [
+        row["example_id"] for row in integer
+    ]
     assert [row["instance_id"] for row in integer] == [row["instance_id"] for row in cubes]
-    for canonical_row, rendered_row in zip(canonical, integer, strict=True):
+    for canonical_row, rendered_row in zip(periodic_canonical, integer, strict=True):
         assert rendered_row["final_dependency_lengths"] == canonical_row["final_dependency_lengths"]
         assert rendered_row["max_dependency_length"] == canonical_row["max_dependency_length"]
         assert rendered_row["mean_dependency_length"] == canonical_row["mean_dependency_length"]
@@ -146,7 +150,19 @@ def test_build_preserves_ids_across_formatters(tmp_path: Path) -> None:
         assert row["completion"] not in row["incorrect_completions"]
         assert len(row["choices"]) == 5
         assert row["choices"][row["correct_choice_index"]] == row["completion"]
-    assert json.loads((output / "manifest.json").read_text())["counts"]["canonical/train"] == 2
+    source_groups = {}
+    for row in canonical:
+        source_groups.setdefault(row["source_example_id"], []).append(row)
+    assert len(source_groups) == 2
+    assert all(
+        {row["complexity"] for row in rows} == {"periodic", "aperiodic", "r-trivial"}
+        for rows in source_groups.values()
+    )
+    assert all(
+        len({len(row["operations"]) for row in rows}) == 1
+        for rows in source_groups.values()
+    )
+    assert json.loads((output / "manifest.json").read_text())["counts"]["canonical/train"] == 6
 
 
 def test_cli_config_check_and_build(tmp_path: Path, capsys: object) -> None:
@@ -170,8 +186,8 @@ def test_build_progress_tracks_generated_examples(
     monkeypatch.setattr("state_bench.io.tqdm", record_progress)
     build_dataset(load_experiment(_small_experiment(tmp_path)))
     assert len(created) == 2
-    assert created[0].total == 3
-    assert created[0].n == 3
+    assert created[0].total == 9
+    assert created[0].n == 9
     assert created[0].closed
     assert created[1].n == created[1].total
     assert created[1].closed
@@ -290,11 +306,16 @@ def test_stage_and_validate_hub_repository(tmp_path: Path) -> None:
         repo_dir=tmp_path / "hub",
     )
     report = validate_hub_repository(repo_dir)
-    assert report["files"] == 9
-    assert report["counts"]["canonical/train"] == 2
+    assert report["files"] == 27
+    assert report["counts"]["canonical/train"] == 6
     assert "configs:" in (repo_dir / "README.md").read_text(encoding="utf-8")
-    canonical_rows = parquet.read_table(repo_dir / "data/canonical/train-00000-of-00002.parquet").to_pylist()
-    assert any(operation["source"] is not None for operation in canonical_rows[0]["operations"])
+    canonical_rows = [
+        row
+        for path in sorted((repo_dir / "data/canonical").glob("train-*.parquet"))
+        for row in parquet.read_table(path).to_pylist()
+    ]
+    periodic_row = next(row for row in canonical_rows if row["complexity"] == "periodic")
+    assert any(operation["source"] is not None for operation in periodic_row["operations"])
 
 
 def test_stage_progress_tracks_rows_written(
@@ -314,8 +335,8 @@ def test_stage_progress_tracks_rows_written(
     monkeypatch.setattr("state_bench.hub.tqdm", record_progress)
     stage_hub_repository(loaded, source_dir=output, repo_dir=tmp_path / "progress-hub")
     assert len(created) == 2
-    assert created[0].total == 9
-    assert created[0].n == 9
+    assert created[0].total == 27
+    assert created[0].n == 27
     assert created[0].closed
     assert created[1].n == created[1].total
     assert created[1].closed
@@ -477,14 +498,12 @@ def test_mixed_complexities_have_stable_parquet_schema_across_shards(tmp_path: P
     source = yaml.safe_load(experiment.read_text(encoding="utf-8"))
     source["generation"]["conditions"] = [
         {
-            "complexity": complexity,
+            "complexity": "periodic",
             "num_variables": [2],
             "num_values": 10,
-            "extra_assignments": {"min": 0 if complexity == "r-trivial" else 1, "max": 1},
+            "extra_assignments": {"min": 1, "max": 1},
         }
-        for complexity in ("r-trivial", "aperiodic", "periodic")
     ]
-    source["generation"]["conditions"][0]["extra_assignments"]["max"] = 0
     experiment.write_text(yaml.safe_dump(source, sort_keys=False), encoding="utf-8")
     loaded = load_experiment(experiment)
     output = build_dataset(loaded)
@@ -509,7 +528,7 @@ def test_log_spaced_schedule_uses_fixed_budget_and_records_bucket(tmp_path: Path
     experiment.write_text(yaml.safe_dump(source, sort_keys=False), encoding="utf-8")
     output = build_dataset(load_experiment(experiment))
     rows = read_jsonl(output / "canonical/train.jsonl")
-    assert len(rows) == 8
+    assert len(rows) == 24
     assert {row["target_extra_assignments"] for row in rows} == {1, 2, 4, 8}
     assert all(row["num_extra_assignments"] == row["target_extra_assignments"] for row in rows)
 
@@ -520,10 +539,10 @@ def test_filler_axes_share_budget_and_can_be_scoped_to_one_formatter(tmp_path: P
     source["splits"] = {"test": {"samples_per_condition": 8}}
     source["generation"]["conditions"] = [
         {
-            "complexity": "r-trivial",
-            "num_variables": [1],
+            "complexity": "periodic",
+            "num_variables": [2],
             "num_values": 10,
-            "extra_assignments": {"min": 0, "max": 0},
+            "extra_assignments": {"min": 1, "max": 1},
             "filler": {
                 "proportions": [0.0, 0.5],
                 "distraction_levels": ["easy", "medium", "hard"],
@@ -535,7 +554,8 @@ def test_filler_axes_share_budget_and_can_be_scoped_to_one_formatter(tmp_path: P
     output = build_dataset(load_experiment(experiment))
     canonical = read_jsonl(output / "canonical/test.jsonl")
     rendered = read_jsonl(output / "rendered/integer-code--r-trivial/test.jsonl")
-    assert len(canonical) == len(rendered) == 8
+    assert len(canonical) == 24
+    assert len(rendered) == 8
     assert not (output / "rendered/cube-painting--r-trivial").exists()
     variants = {(row["filler_proportion"], row["filler_distraction"]) for row in rendered}
     assert variants == {

@@ -15,9 +15,9 @@ from state_bench.config import (
     filler_variants,
 )
 from state_bench.distractors import generate_incorrect_states
-from state_bench.generation import generate_instance
+from state_bench.generation import derive_instance, generate_periodic_source
 from state_bench.io import derive_seed, hub_config_name
-from state_bench.model import StateTrackingInstance
+from state_bench.model import Complexity, StateTrackingInstance
 from state_bench.rendering import RenderedExample, render_instance
 from state_bench.scheduling import (
     AssignmentPlanItem,
@@ -53,10 +53,11 @@ def available_config_names(loaded: LoadedExperiment) -> tuple[str, ...]:
         hub_config_name(
             loaded.spec.huggingface.config_naming,
             formatter=formatter.name,
-            complexity=condition.complexity.value,
+            complexity=complexity.value,
         )
         for formatter in loaded.formatters
         for condition in loaded.spec.generation.conditions
+        for complexity in Complexity
         if condition_uses_formatter(condition, formatter.name)
     }
     return tuple(sorted(names))
@@ -75,7 +76,7 @@ def generate_preview(
     """Generate one sample for a rendered config without creating output files."""
 
     resolved_seed = loaded.spec.dataset.seed if seed is None else seed
-    formatter, conditions = _resolve_config(loaded, config_name)
+    formatter, conditions, complexity = _resolve_config(loaded, config_name)
     candidates = [
         (condition, candidate_num_variables, candidate_proportion, candidate_distraction)
         for condition in conditions
@@ -118,8 +119,17 @@ def generate_preview(
         loaded,
         condition=condition,
         num_variables=selected_num_variables,
-        seed=derive_seed(resolved_seed, "preview", config_name, "semantic"),
+        seed=derive_seed(
+            resolved_seed,
+            "preview",
+            "semantic",
+            str(selected_num_variables),
+            str(condition.num_values),
+            str(plan_item.min_extra_assignments),
+            str(plan_item.max_extra_assignments),
+        ),
         plan_item=plan_item,
+        complexity=complexity,
     )
     incorrect_states = generate_incorrect_states(
         instance,
@@ -177,21 +187,22 @@ def format_preview(preview: SamplePreview) -> str:
 def _resolve_config(
     loaded: LoadedExperiment,
     config_name: str,
-) -> tuple[FormatterSpec, list[ConditionSpec]]:
-    matches: list[tuple[FormatterSpec, list[ConditionSpec]]] = []
+) -> tuple[FormatterSpec, list[ConditionSpec], Complexity]:
+    matches: list[tuple[FormatterSpec, list[ConditionSpec], Complexity]] = []
     for formatter in loaded.formatters:
-        grouped: dict[str, list[ConditionSpec]] = {}
-        for condition in loaded.spec.generation.conditions:
-            if not condition_uses_formatter(condition, formatter.name):
-                continue
+        conditions = [
+            condition
+            for condition in loaded.spec.generation.conditions
+            if condition_uses_formatter(condition, formatter.name)
+        ]
+        for complexity in Complexity:
             name = hub_config_name(
                 loaded.spec.huggingface.config_naming,
                 formatter=formatter.name,
-                complexity=condition.complexity.value,
+                complexity=complexity.value,
             )
-            grouped.setdefault(name, []).append(condition)
-        if config_name in grouped:
-            matches.append((formatter, grouped[config_name]))
+            if config_name == name and conditions:
+                matches.append((formatter, conditions, complexity))
 
     if not matches:
         available = ", ".join(available_config_names(loaded))
@@ -208,10 +219,10 @@ def _generate(
     num_variables: int,
     seed: int,
     plan_item: AssignmentPlanItem,
+    complexity: Complexity,
 ) -> StateTrackingInstance:
     generation = loaded.spec.generation
-    return generate_instance(
-        complexity=condition.complexity,
+    source = generate_periodic_source(
         num_variables=num_variables,
         num_values=condition.num_values,
         min_extra_assignments=plan_item.min_extra_assignments,
@@ -223,6 +234,7 @@ def _generate(
         periodic_constant_probability=generation.periodic_constant_probability,
         rng=random.Random(seed),
     )
+    return derive_instance(source, complexity=complexity)
 
 
 def _canonical_operations(instance: StateTrackingInstance) -> list[str]:

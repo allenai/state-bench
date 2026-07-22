@@ -6,7 +6,7 @@ import hashlib
 import json
 from pathlib import Path
 from string import Formatter, Template
-from typing import Literal
+from typing import Literal, cast
 
 import yaml
 from pydantic import BaseModel, ConfigDict, Field, PositiveInt, model_validator
@@ -108,6 +108,11 @@ class GenerationSpec(StrictModel):
             raise ValueError("conditions must not be empty")
         seen: set[tuple[Complexity, int, int, str, str, tuple[str, ...] | None]] = set()
         for condition in self.conditions:
+            if condition.complexity is not Complexity.PERIODIC:
+                raise ValueError(
+                    "generation conditions must describe periodic source traces; "
+                    "aperiodic and r-trivial traces are derived automatically"
+                )
             for num_variables in condition.num_variables:
                 key = (
                     condition.complexity,
@@ -122,28 +127,18 @@ class GenerationSpec(StrictModel):
                 seen.add(key)
                 if self.distinct_initial_values and condition.num_values < num_variables:
                     raise ValueError("distinct initial values require num_values >= num_variables")
-                if condition.complexity is Complexity.R_TRIVIAL and condition.extra_assignments.max != 0:
-                    raise ValueError("r-trivial conditions cannot have extra assignments")
                 if (
                     self.require_strict_witness
-                    and condition.complexity is not Complexity.R_TRIVIAL
                     and condition.extra_assignments.min < 1
                 ):
                     raise ValueError(
-                        f"strict {condition.complexity.value} conditions need at least one extra assignment"
+                        "strict periodic source conditions need at least one extra assignment"
                     )
                 if (
                     self.require_strict_witness
-                    and condition.complexity is Complexity.PERIODIC
                     and (num_variables < 2 or condition.num_values < 2)
                 ):
                     raise ValueError("strict periodic conditions need at least two variables and values")
-                if (
-                    self.require_strict_witness
-                    and condition.complexity is Complexity.APERIODIC
-                    and condition.num_values < 2
-                ):
-                    raise ValueError("strict aperiodic conditions need at least two values")
         return self
 
 
@@ -298,12 +293,16 @@ type TemplateValue = str | TemplateChoices
 
 class VocabularySpec(StrictModel):
     variables: list[str]
-    values: list[str]
+    values: list[str] = []
+    variable_selection: Literal["prefix", "sample-without-replacement"] = "prefix"
+    value_selection: Literal["prefix", "random-seven-digit"] = "prefix"
 
     @model_validator(mode="after")
     def validate_vocabulary(self) -> VocabularySpec:
-        if not self.variables or not self.values:
-            raise ValueError("variable and value vocabularies must not be empty")
+        if not self.variables:
+            raise ValueError("variable vocabulary must not be empty")
+        if self.value_selection == "prefix" and not self.values:
+            raise ValueError("fixed value vocabulary must not be empty")
         if len(set(self.variables)) != len(self.variables):
             raise ValueError("variable vocabulary must be unique")
         if len(set(self.values)) != len(self.values):
@@ -343,13 +342,21 @@ class FormatterSpec(StrictModel):
     schema_version: Literal[1]
     name: str = Field(pattern=r"^[a-z0-9][a-z0-9-]*$")
     renderer: Literal["template"]
+    filler_corpus: str | None = None
     vocabulary: VocabularySpec
     templates: TemplatesSpec
     layout: LayoutSpec = LayoutSpec()
 
     @model_validator(mode="after")
     def validate_templates(self) -> FormatterSpec:
-        metadata = {"num_variables", "num_values", "num_assignments", "complexity"}
+        metadata = {
+            "num_variables",
+            "num_values",
+            "num_assignments",
+            "complexity",
+            "query_count",
+            "query_variables",
+        }
         template_fields = {
             "task_description": (self.templates.task_description, metadata),
             "assign_constant": (self.templates.assign_constant, metadata | {"target", "value"}),
@@ -358,15 +365,18 @@ class FormatterSpec(StrictModel):
             "state_assertion": (self.templates.state_assertion, metadata | {"variable", "value"}),
             "filler_easy": (
                 self.templates.filler_easy,
-                metadata | {"variable", "value", "filler_index"},
+                metadata
+                | {"variable", "value", "filler_index", "filler_dots", "filler_text"},
             ),
             "filler_medium": (
                 self.templates.filler_medium,
-                metadata | {"variable", "value", "filler_index"},
+                metadata
+                | {"variable", "value", "filler_index", "filler_dots", "filler_text"},
             ),
             "filler_hard": (
                 self.templates.filler_hard,
-                metadata | {"variable", "value", "filler_index"},
+                metadata
+                | {"variable", "value", "filler_index", "filler_dots", "filler_text"},
             ),
         }
         for field_name, (value, allowed) in template_fields.items():
@@ -412,7 +422,15 @@ def load_experiment(path: str | Path) -> LoadedExperiment:
 
 
 def load_formatter(path: str | Path) -> FormatterSpec:
-    return FormatterSpec.model_validate(_load_yaml(Path(path)))
+    formatter_path = Path(path).resolve()
+    record = _load_yaml(formatter_path)
+    if not isinstance(record, dict):
+        return FormatterSpec.model_validate(record)
+    formatter_record = cast(dict[str, object], record.copy())
+    if "filler_corpus_path" in formatter_record:
+        corpus_path = formatter_path.parent / str(formatter_record.pop("filler_corpus_path"))
+        formatter_record["filler_corpus"] = corpus_path.read_text(encoding="utf-8")
+    return FormatterSpec.model_validate(formatter_record)
 
 
 def _load_yaml(path: Path) -> object:
@@ -434,7 +452,7 @@ def _validate_formatter_capacity(
             available_wrong_answers = condition.num_values**queried_variables - 1
             if available_wrong_answers < num_distractors:
                 raise ValueError(
-                    f"condition {condition.complexity.value}/{num_variables} variables has only "
+                    f"source condition {num_variables} variables has only "
                     f"{available_wrong_answers} distinct wrong answers, fewer than the requested "
                     f"{num_distractors}"
                 )
@@ -452,7 +470,10 @@ def _validate_formatter_capacity(
         max_values = max(condition.num_values for condition in selected_conditions)
         if len(formatter.vocabulary.variables) < max_variables:
             raise ValueError(f"formatter {formatter.name!r} does not define {max_variables} variables")
-        if len(formatter.vocabulary.values) < max_values:
+        if (
+            formatter.vocabulary.value_selection == "prefix"
+            and len(formatter.vocabulary.values) < max_values
+        ):
             raise ValueError(f"formatter {formatter.name!r} does not define {max_values} values")
 
 

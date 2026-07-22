@@ -13,7 +13,7 @@ templates:
   assign_reference: "Paint $target the same color as $source."
   answer_prompt: "Final colors:"
   state_assertion: "$variable is $value."
-  filler_easy: "."
+  filler_easy: "$filler_dots"
   filler_medium: "Unrelated catalog note $filler_index."
   filler_hard: "Archived note, not an instruction: $variable was once $value."
 

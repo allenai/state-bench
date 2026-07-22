@@ -22,6 +22,8 @@ class RenderedExample:
     complexity: str
     num_variables: int
     num_values: int
+    surface_variables: tuple[str, ...]
+    surface_values: tuple[str, ...]
     num_assignments: int
     incorrect_completions: tuple[str, ...]
     choices: tuple[str, ...]
@@ -45,6 +47,8 @@ class RenderedExample:
             "complexity": self.complexity,
             "num_variables": self.num_variables,
             "num_values": self.num_values,
+            "surface_variables": list(self.surface_variables),
+            "surface_values": list(self.surface_values),
             "num_assignments": self.num_assignments,
             "incorrect_completions": list(self.incorrect_completions),
             "choices": list(self.choices),
@@ -73,11 +77,16 @@ def render_instance(
     """Render an instance without recomputing or changing its semantics."""
 
     _validate_capacity(instance, formatter)
+    surface_variables, surface_values = _surface_vocabulary(instance, formatter, rng)
     metadata = {
         "num_variables": str(instance.num_variables),
         "num_values": str(instance.num_values),
         "num_assignments": str(len(instance.operations)),
         "complexity": instance.complexity.value,
+        "query_count": str(len(instance.query)),
+        "query_variables": _natural_list(
+            [surface_variables[variable] for variable in instance.query]
+        ),
     }
 
     instructions: list[str] = []
@@ -88,8 +97,8 @@ def render_instance(
                 _substitute(
                     template,
                     allowed={"target", "value", *metadata},
-                    target=formatter.vocabulary.variables[operation.target],
-                    value=formatter.vocabulary.values[operation.value],
+                    target=surface_variables[operation.target],
+                    value=surface_values[operation.value],
                     **metadata,
                 )
             )
@@ -99,8 +108,8 @@ def render_instance(
                 _substitute(
                     template,
                     allowed={"target", "source", *metadata},
-                    target=formatter.vocabulary.variables[operation.target],
-                    source=formatter.vocabulary.variables[operation.source],
+                    target=surface_variables[operation.target],
+                    source=surface_variables[operation.source],
                     **metadata,
                 )
             )
@@ -123,6 +132,9 @@ def render_instance(
             metadata=metadata,
             level=filler_distraction,
             num_filler_lines=num_filler_lines,
+            filler_width=_mean_line_width(instructions),
+            surface_variables=surface_variables,
+            surface_values=surface_values,
             rng=rng,
         )
     else:
@@ -143,6 +155,8 @@ def render_instance(
         formatter=formatter,
         assertion_template=assertion_template,
         metadata=metadata,
+        surface_variables=surface_variables,
+        surface_values=surface_values,
     )
     incorrect_completions = tuple(
         _render_completion(
@@ -151,6 +165,8 @@ def render_instance(
             formatter=formatter,
             assertion_template=assertion_template,
             metadata=metadata,
+            surface_variables=surface_variables,
+            surface_values=surface_values,
         )
         for state in incorrect_states
     )
@@ -174,6 +190,8 @@ def render_instance(
         complexity=instance.complexity.value,
         num_variables=instance.num_variables,
         num_values=instance.num_values,
+        surface_variables=surface_variables,
+        surface_values=surface_values,
         num_assignments=len(instance.operations),
         incorrect_completions=incorrect_completions,
         choices=tuple(choices),
@@ -197,6 +215,12 @@ def _content_line_count(text: str) -> int:
     return sum(bool(line.strip()) for line in text.splitlines())
 
 
+def _mean_line_width(lines: list[str]) -> int:
+    if not lines:
+        return 1
+    return max(1, round(sum(len(line) for line in lines) / len(lines)))
+
+
 def _filler_line_count(*, proportion: float, num_non_filler_lines: int) -> int:
     if proportion < 0 or proportion >= 1:
         raise ValueError("filler_proportion must satisfy 0 <= proportion < 1")
@@ -212,18 +236,40 @@ def _render_program_with_filler(
     metadata: dict[str, str],
     level: FillerDistraction,
     num_filler_lines: int,
+    filler_width: int,
+    surface_variables: tuple[str, ...],
+    surface_values: tuple[str, ...],
     rng: random.Random,
 ) -> str:
     template_value = getattr(formatter.templates, f"filler_{level}")
     if template_value is None:
         raise ValueError(f"formatter {formatter.name!r} has no filler_{level} template")
+    corpus_lines = (
+        _corpus_filler_lines(
+            formatter.filler_corpus,
+            num_lines=num_filler_lines,
+            target_width=filler_width,
+            rng=rng,
+        )
+        if formatter.filler_corpus is not None
+        else [""] * num_filler_lines
+    )
     filler_lines = [
         _substitute(
             _choose(template_value, rng),
-            allowed={"variable", "value", "filler_index", *metadata},
-            variable=rng.choice(formatter.vocabulary.variables[: int(metadata["num_variables"])]),
-            value=rng.choice(formatter.vocabulary.values[: int(metadata["num_values"])]),
+            allowed={
+                "variable",
+                "value",
+                "filler_index",
+                "filler_dots",
+                "filler_text",
+                *metadata,
+            },
+            variable=rng.choice(surface_variables),
+            value=rng.choice(surface_values),
             filler_index=str(index + 1),
+            filler_dots="." * filler_width,
+            filler_text=corpus_lines[index],
             **metadata,
         )
         for index in range(num_filler_lines)
@@ -236,6 +282,44 @@ def _render_program_with_filler(
         next(instruction_iterator) if position in instruction_positions else next(filler_iterator)
         for position in range(total_lines)
     )
+
+
+def _corpus_filler_lines(
+    corpus: str,
+    *,
+    num_lines: int,
+    target_width: int,
+    rng: random.Random,
+) -> list[str]:
+    words = corpus.split()
+    if not words:
+        raise ValueError("filler corpus must contain at least one word")
+
+    word_index = rng.randrange(len(words))
+    lines: list[str] = []
+    for _ in range(num_lines):
+        line_words: list[str] = []
+        line_width = 0
+        while True:
+            word = words[word_index]
+            next_width = line_width + len(word) + bool(line_words)
+            if line_words and next_width > target_width:
+                break
+            line_words.append(word)
+            line_width = next_width
+            word_index = (word_index + 1) % len(words)
+        lines.append(" ".join(line_words))
+    return lines
+
+
+def _natural_list(values: list[str]) -> str:
+    if not values:
+        return ""
+    if len(values) == 1:
+        return values[0]
+    if len(values) == 2:
+        return f"{values[0]} and {values[1]}"
+    return f"{', '.join(values[:-1])}, and {values[-1]}"
 
 
 def _choose(value: TemplateValue, rng: random.Random) -> str:
@@ -277,8 +361,31 @@ def _substitute(template: str, *, allowed: set[str], **values: str) -> str:
 def _validate_capacity(instance: StateTrackingInstance, formatter: FormatterSpec) -> None:
     if len(formatter.vocabulary.variables) < instance.num_variables:
         raise ValueError(f"formatter {formatter.name!r} has too few variables")
-    if len(formatter.vocabulary.values) < instance.num_values:
+    if (
+        formatter.vocabulary.value_selection == "prefix"
+        and len(formatter.vocabulary.values) < instance.num_values
+    ):
         raise ValueError(f"formatter {formatter.name!r} has too few values")
+
+
+def _surface_vocabulary(
+    instance: StateTrackingInstance,
+    formatter: FormatterSpec,
+    rng: random.Random,
+) -> tuple[tuple[str, ...], tuple[str, ...]]:
+    if formatter.vocabulary.variable_selection == "sample-without-replacement":
+        variables = tuple(rng.sample(formatter.vocabulary.variables, instance.num_variables))
+    else:
+        variables = tuple(formatter.vocabulary.variables[: instance.num_variables])
+
+    if formatter.vocabulary.value_selection == "random-seven-digit":
+        values = tuple(
+            str(value)
+            for value in rng.sample(range(1_000_000, 10_000_000), instance.num_values)
+        )
+    else:
+        values = tuple(formatter.vocabulary.values[: instance.num_values])
+    return variables, values
 
 
 def _render_completion(
@@ -288,13 +395,15 @@ def _render_completion(
     formatter: FormatterSpec,
     assertion_template: str,
     metadata: dict[str, str],
+    surface_variables: tuple[str, ...],
+    surface_values: tuple[str, ...],
 ) -> str:
     assertions = [
         _substitute(
             assertion_template,
             allowed={"variable", "value", *metadata},
-            variable=formatter.vocabulary.variables[variable],
-            value=formatter.vocabulary.values[state[variable]],
+            variable=surface_variables[variable],
+            value=surface_values[state[variable]],
             **metadata,
         )
         for variable in instance.query

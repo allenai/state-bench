@@ -13,7 +13,7 @@ templates:
   assign_reference: "$target <- $source;"
   answer_prompt: null
   state_assertion: "$variable ?= $value;"
-  filler_easy: "// ."
+  filler_easy: "// $filler_dots"
   filler_medium: "// unrelated note $filler_index"
   filler_hard: "// stale log; do not execute: $variable <- $value;"
 

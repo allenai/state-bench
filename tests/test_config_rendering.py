@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import random
+import re
 from pathlib import Path
 
 import pytest
@@ -22,6 +23,7 @@ def test_default_experiment_loads_and_validates_capacities() -> None:
         "spreadsheet-cells",
         "status-lights",
         "people-in-rooms",
+        "ruler",
     ]
 
 
@@ -66,6 +68,32 @@ def test_filler_lines_hit_requested_ratio_without_changing_program_order() -> No
     assert rendered.completion == "a ?= 1; b ?= 2;"
     assert rendered.prefix.index("a <- 1;") < rendered.prefix.index("b <- 2;")
     assert rendered.prefix.count("// stale log; do not execute:") == 3
+
+
+def test_easy_filler_matches_mean_rendered_assignment_width() -> None:
+    instance = StateTrackingInstance.create(
+        complexity=Complexity.PERIODIC,
+        num_variables=2,
+        num_values=2,
+        operations=(AssignConstant(0, 0), AssignConstant(1, 1)),
+        query=(0, 1),
+        final_state=(0, 1),
+    )
+    formatter = load_formatter(ROOT / "configs/formats/status-lights.yaml")
+    rendered = render_instance(
+        instance,
+        formatter,
+        rng=random.Random(4),
+        filler_proportion=0.5,
+        filler_distraction="easy",
+    )
+
+    expected_width = round(
+        (len("Set light A to red.") + len("Set light B to orange.")) / 2
+    )
+    filler_lines = [line for line in rendered.prefix.splitlines() if set(line) == {"."}]
+    assert len(filler_lines) == rendered.num_filler_lines
+    assert {len(line) for line in filler_lines} == {expected_width}
 
 
 def test_cube_golden_render() -> None:
@@ -120,6 +148,58 @@ def test_additional_natural_language_formatters(
     rendered = render_instance(instance, formatter, rng=random.Random(0))
     assert reference_text in rendered.prefix
     assert rendered.completion == completion
+
+
+def test_ruler_formatter_interleaves_wrapping_essay_corpus() -> None:
+    instance = StateTrackingInstance.create(
+        complexity=Complexity.PERIODIC,
+        num_variables=2,
+        num_values=2,
+        operations=(AssignConstant(0, 0), AssignConstant(1, 1), AssignVariable(0, 1)),
+        query=(0, 1),
+        final_state=(1, 1),
+    )
+    formatter = load_formatter(ROOT / "configs/formats/ruler.yaml")
+    rendered = render_instance(
+        instance,
+        formatter,
+        rng=random.Random(0),
+        filler_proportion=0.5,
+        filler_distraction="easy",
+    )
+
+    assert "Some special magic numbers are hidden" in rendered.prefix
+    assert len(set(rendered.surface_variables)) == 2
+    assert set(rendered.surface_variables).issubset(formatter.vocabulary.variables)
+    assert len(set(rendered.surface_values)) == 2
+    assert all(re.fullmatch(r"\d{7}", value) for value in rendered.surface_values)
+    for variable, value in zip(
+        rendered.surface_variables,
+        rendered.surface_values,
+        strict=True,
+    ):
+        assert f"One of the special magic numbers for {variable} is: {value}." in rendered.prefix
+    assert "becomes the number currently assigned to" in rendered.prefix
+    assert all(variable in rendered.prefix for variable in rendered.surface_variables)
+    assert rendered.num_filler_lines == 5
+    corpus = " ".join((ROOT / "configs/corpora/ruler-essay.txt").read_text().split())
+    filler_lines = [
+        line.strip()
+        for line in rendered.prefix.splitlines()
+        if line.strip() and line.strip() in corpus
+    ]
+    assert len(filler_lines) == rendered.num_filler_lines
+    assert rendered.completion == (
+        f"{rendered.surface_variables[0]} is {rendered.surface_values[1]}. "
+        f"{rendered.surface_variables[1]} is {rendered.surface_values[1]}."
+    )
+    assert rendered == render_instance(
+        instance,
+        formatter,
+        rng=random.Random(0),
+        filler_proportion=0.5,
+        filler_distraction="easy",
+    )
 
 
 def test_unknown_formatter_field_is_rejected() -> None:

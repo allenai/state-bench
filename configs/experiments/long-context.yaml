@@ -11,8 +11,8 @@ splits:
     # distributed across the log-spaced buckets below rather than repeated at
     # every depth. Uniform log-bucket weights provide comparable coverage from
     # short traces through the roughly one-million-token tail. With 19 target
-    # assignment buckets, 380 rows gives exactly 20 samples per target for each
-    # complexity/variable-count pair.
+    # assignment buckets, 380 periodic source rows gives exactly 20 samples per
+    # target. Every source row produces periodic, aperiodic, and r-trivial rows.
     samples_per_condition: 380
 
 generation:
@@ -24,26 +24,19 @@ generation:
   # constants retain multiple value lineages and reset selected chains.
   periodic_constant_probability: 0.1
   conditions:
-    - complexity: r-trivial
-      num_variables: [1]
+    # Padding is scheduled on short sources, then shared by all three derived
+    # complexity classes and every selected formatter.
+    - complexity: periodic
+      num_variables: [2, 4, 6]
       num_values: 10
-      extra_assignments: {min: 0, max: 0}
+      extra_assignments: {min: 1, max: 1}
       # The fixed condition budget is spread across the zero-padding baseline
       # and every nonzero proportion/distraction combination.
       filler:
         proportions: [0.0, 0.9, 0.99, 0.999, 0.99995]
         distraction_levels: [easy, medium, hard]
-    - complexity: aperiodic
-      num_variables: [2, 4, 6]
-      num_values: 10
-      extra_assignments:
-        distribution: log-spaced
-        min: 1
-        max: 192000
-        growth_factor: 2.0
-        sample_decay: 1.0
-        jitter_fraction: 0.0
-        min_samples_per_bucket: 20
+    # Sequence-length sweeps stay unpadded so the largest traces remain
+    # tractable; these rows are likewise emitted in all three classes.
     - complexity: periodic
       num_variables: [2, 4, 6]
       num_values: 10
@@ -62,6 +55,7 @@ formatters:
   - config: ../formats/spreadsheet-cells.yaml
   - config: ../formats/status-lights.yaml
   - config: ../formats/people-in-rooms.yaml
+  - config: ../formats/ruler.yaml
 
 output:
   local_format: jsonl

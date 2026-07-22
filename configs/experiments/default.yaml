@@ -19,14 +19,6 @@ generation:
   allow_self_reference: false
   distinct_initial_values: false
   conditions:
-    - complexity: r-trivial
-      num_variables: [2, 4, 6]
-      num_values: 10
-      extra_assignments: {min: 0, max: 0}
-    - complexity: aperiodic
-      num_variables: [2, 4, 6]
-      num_values: 10
-      extra_assignments: {min: 1, max: 20}
     - complexity: periodic
       num_variables: [2, 4, 6]
       num_values: 10
@@ -38,6 +30,7 @@ formatters:
   - config: ../formats/spreadsheet-cells.yaml
   - config: ../formats/status-lights.yaml
   - config: ../formats/people-in-rooms.yaml
+  - config: ../formats/ruler.yaml
 
 output:
   local_format: jsonl

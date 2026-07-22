@@ -38,12 +38,13 @@ def test_preview_is_deterministic_and_uses_requested_config() -> None:
 
 def test_available_config_names_cover_each_formatter_and_complexity() -> None:
     names = available_config_names(load_experiment(EXPERIMENT))
-    assert len(names) == 15
+    assert len(names) == 18
     assert "cube-painting--r-trivial" in names
     assert "integer-code--periodic" in names
     assert "spreadsheet-cells--periodic" in names
     assert "status-lights--aperiodic" in names
     assert "people-in-rooms--r-trivial" in names
+    assert "ruler--periodic" in names
 
 
 def test_sample_cli_prints_human_readable_preview(capsys: pytest.CaptureFixture[str]) -> None:
@@ -89,17 +90,18 @@ def test_long_context_preview_exposes_padded_r_trivial_in_every_formatter() -> N
         "spreadsheet-cells",
         "status-lights",
         "people-in-rooms",
+        "ruler",
     ):
         assert f"{formatter}--r-trivial" in names
     preview = generate_preview(
         loaded,
         config_name="cube-painting--r-trivial",
         seed=7,
-        num_variables=1,
+        num_variables=2,
         filler_proportion=0.99,
         filler_distraction="medium",
     )
     assert preview.rendered.filler_proportion == 0.99
     assert preview.rendered.filler_distraction == "medium"
-    assert preview.rendered.num_filler_lines == 297
+    assert preview.rendered.num_filler_lines == 495
     assert "Unrelated catalog note" in preview.rendered.prefix
