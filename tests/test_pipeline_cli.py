@@ -37,6 +37,23 @@ class FakeLengthTokenizer:
         return {"input_ids": [[0] * (len(text) + offset) for text in texts]}
 
 
+class RecordingProgress:
+    def __init__(self, *, total: int, **kwargs: object) -> None:
+        del kwargs
+        self.total = total
+        self.n = 0.0
+        self.closed = False
+
+    def set_postfix(self, *args: object, **kwargs: object) -> None:
+        del args, kwargs
+
+    def update(self, amount: float = 1) -> None:
+        self.n += amount
+
+    def close(self) -> None:
+        self.closed = True
+
+
 def _small_experiment(tmp_path: Path) -> Path:
     source = yaml.safe_load((ROOT / "configs/experiments/default.yaml").read_text(encoding="utf-8"))
     source["dataset"]["output_dir"] = str(tmp_path / "output")
@@ -87,6 +104,27 @@ def test_cli_config_check_and_build(tmp_path: Path, capsys: object) -> None:
     assert main(["config", "check", str(experiment)]) == 0
     assert main(["build", str(experiment)]) == 0
     assert (tmp_path / "output/canonical/train.jsonl").is_file()
+
+
+def test_build_progress_tracks_generated_examples(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    created: list[RecordingProgress] = []
+
+    def record_progress(**kwargs: object) -> RecordingProgress:
+        progress = RecordingProgress(**kwargs)  # ty: ignore[invalid-argument-type]
+        created.append(progress)
+        return progress
+
+    monkeypatch.setattr("state_bench.io.tqdm", record_progress)
+    build_dataset(load_experiment(_small_experiment(tmp_path)))
+    assert len(created) == 2
+    assert created[0].total == 3
+    assert created[0].n == 3
+    assert created[0].closed
+    assert created[1].n == created[1].total
+    assert created[1].closed
 
 
 def test_default_hub_repo_dir_mirrors_configured_data_dir(tmp_path: Path) -> None:
@@ -207,6 +245,30 @@ def test_stage_and_validate_hub_repository(tmp_path: Path) -> None:
     assert "configs:" in (repo_dir / "README.md").read_text(encoding="utf-8")
     canonical_rows = parquet.read_table(repo_dir / "data/canonical/train-00000-of-00002.parquet").to_pylist()
     assert any(operation["source"] is not None for operation in canonical_rows[0]["operations"])
+
+
+def test_stage_progress_tracks_rows_written(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    pytest.importorskip("pyarrow.parquet")
+    loaded = load_experiment(_small_experiment(tmp_path))
+    output = build_dataset(loaded)
+    created: list[RecordingProgress] = []
+
+    def record_progress(**kwargs: object) -> RecordingProgress:
+        progress = RecordingProgress(**kwargs)  # ty: ignore[invalid-argument-type]
+        created.append(progress)
+        return progress
+
+    monkeypatch.setattr("state_bench.hub.tqdm", record_progress)
+    stage_hub_repository(loaded, source_dir=output, repo_dir=tmp_path / "progress-hub")
+    assert len(created) == 2
+    assert created[0].total == 9
+    assert created[0].n == 9
+    assert created[0].closed
+    assert created[1].n == created[1].total
+    assert created[1].closed
 
 
 def test_token_strata_use_half_open_bounds_and_annotate_rows() -> None:

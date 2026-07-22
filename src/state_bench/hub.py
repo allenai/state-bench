@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Any
 
 import yaml
+from tqdm.auto import tqdm
 
 from state_bench.config import LoadedExperiment, TokenStratificationSpec
 from state_bench.io import read_jsonl, sha256_file
@@ -29,6 +30,21 @@ def stage_hub_repository(
     data_dir = repo_dir / "data"
     data_dir.mkdir()
 
+    source_manifest = json.loads((source_dir / "manifest.json").read_text(encoding="utf-8"))
+    include_canonical = loaded.spec.huggingface.include_canonical_config
+    total_rows = sum(
+        int(count)
+        for name, count in source_manifest["counts"].items()
+        if include_canonical or not name.startswith("canonical/")
+    )
+    progress = tqdm(
+        total=total_rows,
+        desc="Staging Hub data",
+        unit="row",
+        dynamic_ncols=True,
+        disable=None,
+    )
+
     configs: list[dict[str, Any]] = []
     token_strata = loaded.spec.huggingface.token_strata
     tokenizer = (
@@ -36,27 +52,32 @@ def stage_hub_repository(
         if token_strata is not None
         else None
     )
-    if loaded.spec.huggingface.include_canonical_config:
-        configs.append(
-            _stage_config(
-                source_dir / "canonical",
-                data_dir,
-                "canonical",
-                shard_size=loaded.spec.output.shard_size,
-            )
-        )
-    for config_dir in sorted((source_dir / "rendered").iterdir()):
-        if config_dir.is_dir():
+    try:
+        if include_canonical:
             configs.append(
                 _stage_config(
-                    config_dir,
+                    source_dir / "canonical",
                     data_dir,
-                    config_dir.name,
+                    "canonical",
                     shard_size=loaded.spec.output.shard_size,
-                    token_strata=token_strata,
-                    tokenizer=tokenizer,
+                    progress=progress,
                 )
             )
+        for config_dir in sorted((source_dir / "rendered").iterdir()):
+            if config_dir.is_dir():
+                configs.append(
+                    _stage_config(
+                        config_dir,
+                        data_dir,
+                        config_dir.name,
+                        shard_size=loaded.spec.output.shard_size,
+                        token_strata=token_strata,
+                        tokenizer=tokenizer,
+                        progress=progress,
+                    )
+                )
+    finally:
+        progress.close()
 
     metadata: dict[str, Any] = {
         "pretty_name": loaded.spec.dataset.name,
@@ -78,12 +99,24 @@ def stage_hub_repository(
             encoding="utf-8",
         )
 
-    source_manifest = json.loads((source_dir / "manifest.json").read_text(encoding="utf-8"))
-    source_manifest["hub_files"] = {
-        str(path.relative_to(repo_dir)): sha256_file(path)
-        for path in sorted(repo_dir.rglob("*"))
-        if path.is_file()
-    }
+    staged_files = [path for path in sorted(repo_dir.rglob("*")) if path.is_file()]
+    hub_hashes: dict[str, str] = {}
+    hash_progress = tqdm(
+        total=len(staged_files),
+        desc="Hashing staged files",
+        unit="file",
+        dynamic_ncols=True,
+        disable=None,
+    )
+    try:
+        for path in staged_files:
+            relative_path = str(path.relative_to(repo_dir))
+            hash_progress.set_postfix(file=relative_path, refresh=False)
+            hub_hashes[relative_path] = sha256_file(path)
+            hash_progress.update()
+    finally:
+        hash_progress.close()
+    source_manifest["hub_files"] = hub_hashes
     (repo_dir / "manifest.json").write_text(
         json.dumps(source_manifest, indent=2, sort_keys=True) + "\n",
         encoding="utf-8",
@@ -215,6 +248,7 @@ def _stage_config(
     shard_size: int,
     token_strata: TokenStratificationSpec | None = None,
     tokenizer: TokenizerLike | None = None,
+    progress: Any | None = None,
 ) -> dict[str, Any]:
     if not source_dir.is_dir():
         raise FileNotFoundError(f"missing generated config directory: {source_dir}")
@@ -224,11 +258,13 @@ def _stage_config(
     for jsonl_path in sorted(source_dir.glob("*.jsonl")):
         split = jsonl_path.stem
         if token_strata is None:
+            _set_progress_context(progress, config=config_name, split=split, phase="parquet")
             _jsonl_to_parquet_shards(
                 jsonl_path,
                 destination,
                 split=split,
                 shard_size=shard_size,
+                progress=progress,
             )
             data_files.append({"split": split, "path": f"data/{config_name}/{split}-*.parquet"})
             continue
@@ -238,17 +274,28 @@ def _stage_config(
             read_jsonl(jsonl_path),
             spec=token_strata,
             tokenizer=tokenizer,
+            progress=progress,
+            progress_weight=0.5,
+            progress_context={"config": config_name, "split": split, "phase": "tokenize"},
         )
         for stratum in token_strata.ranges:
             records = records_by_stratum[stratum.name]
             if not records:
                 continue
             stratified_split = f"{split}__{stratum.name}"
+            _set_progress_context(
+                progress,
+                config=config_name,
+                split=stratified_split,
+                phase="parquet",
+            )
             _records_to_parquet_shards(
                 records,
                 destination,
                 split=stratified_split,
                 shard_size=shard_size,
+                progress=progress,
+                progress_weight=0.5,
             )
             data_files.append(
                 {
@@ -267,11 +314,18 @@ def _jsonl_to_parquet_shards(
     *,
     split: str,
     shard_size: int,
+    progress: Any | None = None,
 ) -> None:
     records = read_jsonl(source)
     if not records:
         raise ValueError(f"cannot infer a Parquet schema from empty split: {source}")
-    _records_to_parquet_shards(records, destination, split=split, shard_size=shard_size)
+    _records_to_parquet_shards(
+        records,
+        destination,
+        split=split,
+        shard_size=shard_size,
+        progress=progress,
+    )
 
 
 def _records_to_parquet_shards(
@@ -280,6 +334,8 @@ def _records_to_parquet_shards(
     *,
     split: str,
     shard_size: int,
+    progress: Any | None = None,
+    progress_weight: float = 1.0,
 ) -> None:
     _require_hub_dependencies()
     import pyarrow as pa
@@ -291,6 +347,8 @@ def _records_to_parquet_shards(
         table = _arrow_table(pa, chunk)
         name = f"{split}-{shard_index:05d}-of-{num_shards:05d}.parquet"
         parquet.write_table(table, destination / name, compression="zstd")
+        if progress is not None:
+            progress.update(len(chunk) * progress_weight)
 
 
 def _partition_records_by_token_stratum(
@@ -298,10 +356,15 @@ def _partition_records_by_token_stratum(
     *,
     spec: TokenStratificationSpec,
     tokenizer: TokenizerLike,
+    progress: Any | None = None,
+    progress_weight: float = 1.0,
+    progress_context: dict[str, str] | None = None,
 ) -> dict[str, list[dict[str, Any]]]:
     """Annotate and partition rendered rows using exact tokenizer lengths."""
 
     result = {stratum.name: [] for stratum in spec.ranges}
+    if progress_context is not None:
+        _set_progress_context(progress, **progress_context)
     for record_batch in batched(records, spec.batch_size, strict=False):
         batch = list(record_batch)
         texts = []
@@ -330,7 +393,14 @@ def _partition_records_by_token_stratum(
             )
             annotated = {**record, "token_length": token_length, "token_stratum": stratum.name}
             result[stratum.name].append(annotated)
+        if progress is not None:
+            progress.update(len(batch) * progress_weight)
     return result
+
+
+def _set_progress_context(progress: Any | None, **context: str) -> None:
+    if progress is not None:
+        progress.set_postfix(context, refresh=False)
 
 
 def _base_split(split: str) -> str:

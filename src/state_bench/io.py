@@ -11,6 +11,8 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+from tqdm.auto import tqdm
+
 from state_bench.config import LoadedExperiment, condition_uses_formatter
 from state_bench.distractors import generate_incorrect_states
 from state_bench.generation import generate_instance
@@ -37,6 +39,18 @@ def build_dataset(loaded: LoadedExperiment, *, output_dir: Path | None = None) -
 
     canonical_handles: dict[str, Any] = {}
     rendered_handles: dict[tuple[str, str], Any] = {}
+    total_examples = sum(
+        split.samples_per_condition
+        * sum(len(condition.num_variables) for condition in spec.generation.conditions)
+        for split in spec.splits.values()
+    )
+    progress = tqdm(
+        total=total_examples,
+        desc="Building dataset",
+        unit="example",
+        dynamic_ncols=True,
+        disable=None,
+    )
     try:
         for split in spec.splits:
             path = canonical_dir / f"{split}.jsonl"
@@ -63,6 +77,12 @@ def build_dataset(loaded: LoadedExperiment, *, output_dir: Path | None = None) -
         for split_name, split_spec in spec.splits.items():
             for condition_index, condition in enumerate(spec.generation.conditions):
                 for num_variables in condition.num_variables:
+                    progress.set_postfix(
+                        split=split_name,
+                        complexity=condition.complexity.value,
+                        variables=num_variables,
+                        refresh=False,
+                    )
                     assignment_plan = build_assignment_plan(
                         condition.extra_assignments,
                         total_samples=split_spec.samples_per_condition,
@@ -115,9 +135,7 @@ def build_dataset(loaded: LoadedExperiment, *, output_dir: Path | None = None) -
                             distinct_initial_values=spec.generation.distinct_initial_values,
                             require_strict_witness=spec.generation.require_strict_witness,
                             allow_self_reference=spec.generation.allow_self_reference,
-                            periodic_constant_probability=(
-                                spec.generation.periodic_constant_probability
-                            ),
+                            periodic_constant_probability=(spec.generation.periodic_constant_probability),
                             rng=random.Random(semantic_seed),
                         )
                         canonical_record = {
@@ -151,9 +169,7 @@ def build_dataset(loaded: LoadedExperiment, *, output_dir: Path | None = None) -
                             incorrect_states = generate_incorrect_states(
                                 instance,
                                 num_distractors=spec.output.multiple_choice.num_distractors,
-                                rng=random.Random(
-                                    derive_seed(spec.dataset.seed, "distractors", example_id)
-                                ),
+                                rng=random.Random(derive_seed(spec.dataset.seed, "distractors", example_id)),
                             )
                             rendered = render_instance(
                                 instance,
@@ -168,9 +184,7 @@ def build_dataset(loaded: LoadedExperiment, *, output_dir: Path | None = None) -
                             rendered_record["num_extra_assignments"] = (
                                 len(instance.operations) - num_variables
                             )
-                            rendered_record["target_extra_assignments"] = (
-                                plan_item.target_extra_assignments
-                            )
+                            rendered_record["target_extra_assignments"] = plan_item.target_extra_assignments
                             if spec.output.include_canonical_trace:
                                 rendered_record["operations"] = canonical_record["operations"]
                                 rendered_record["query"] = canonical_record["query"]
@@ -179,9 +193,28 @@ def build_dataset(loaded: LoadedExperiment, *, output_dir: Path | None = None) -
                             write_json_line(rendered_handles[(config_name, split_name)], rendered_record)
                             counts[f"{config_name}/{split_name}"] += 1
                             unique_semantics[f"{config_name}/{split_name}"].add(instance.instance_id)
+                        progress.update()
     finally:
+        progress.close()
         for handle in (*canonical_handles.values(), *rendered_handles.values()):
             handle.close()
+
+    file_hashes: dict[str, str] = {}
+    hash_progress = tqdm(
+        total=len(generated_files),
+        desc="Hashing dataset files",
+        unit="file",
+        dynamic_ncols=True,
+        disable=None,
+    )
+    try:
+        for path in sorted(generated_files):
+            relative_path = str(path.relative_to(root))
+            hash_progress.set_postfix(file=relative_path, refresh=False)
+            file_hashes[relative_path] = sha256_file(path)
+            hash_progress.update()
+    finally:
+        hash_progress.close()
 
     manifest = {
         "schema_version": 1,
@@ -189,17 +222,11 @@ def build_dataset(loaded: LoadedExperiment, *, output_dir: Path | None = None) -
         "generated_at": datetime.now(UTC).isoformat(),
         "experiment_config": str(loaded.path),
         "experiment_config_hash": normalized_hash(spec.model_dump(mode="json")),
-        "formatter_config_hashes": {
-            formatter.name: formatter.config_hash for formatter in loaded.formatters
-        },
+        "formatter_config_hashes": {formatter.name: formatter.config_hash for formatter in loaded.formatters},
         "counts": dict(sorted(counts.items())),
-        "unique_semantic_counts": {
-            key: len(value) for key, value in sorted(unique_semantics.items())
-        },
+        "unique_semantic_counts": {key: len(value) for key, value in sorted(unique_semantics.items())},
         "cross_split_semantic_overlap": _split_overlap(split_semantics),
-        "files": {
-            str(path.relative_to(root)): sha256_file(path) for path in sorted(generated_files)
-        },
+        "files": file_hashes,
         "huggingface": spec.huggingface.model_dump(mode="json"),
     }
     manifest_path = root / "manifest.json"
@@ -253,8 +280,7 @@ def _example_id(
     filler_distraction: str | None,
 ) -> str:
     value = (
-        f"{dataset}\0{split}\0{complexity}\0{num_variables}\0{num_values}\0"
-        f"{condition_index}\0{sample_index}"
+        f"{dataset}\0{split}\0{complexity}\0{num_variables}\0{num_values}\0{condition_index}\0{sample_index}"
     )
     if target_extra_assignments is not None:
         value += f"\0{target_extra_assignments}"

@@ -872,6 +872,7 @@ source = { editable = "." }
 dependencies = [
     { name = "pydantic" },
     { name = "pyyaml" },
+    { name = "tqdm" },
 ]
 
 [package.optional-dependencies]
@@ -900,6 +901,7 @@ requires-dist = [
     { name = "pyarrow", marker = "extra == 'hub'", specifier = ">=20.0" },
     { name = "pydantic", specifier = ">=2.12" },
     { name = "pyyaml", specifier = ">=6.0" },
+    { name = "tqdm", specifier = ">=4.67" },
     { name = "transformers", marker = "extra == 'analysis'", specifier = ">=4.57" },
 ]
 provides-extras = ["hub", "analysis"]
