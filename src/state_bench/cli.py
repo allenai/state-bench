@@ -64,6 +64,7 @@ def build_parser() -> argparse.ArgumentParser:
     stage = hub_commands.add_parser("stage", help="Build a local Hugging Face repository.")
     stage.add_argument("config", type=Path)
     stage.add_argument("--source-dir", type=Path)
+    stage.add_argument("--workers", type=int, help="Override huggingface.staging_workers.")
     stage.add_argument(
         "--repo-dir",
         type=Path,
@@ -150,7 +151,14 @@ def main(argv: Sequence[str] | None = None) -> int:
         loaded = load_experiment(args.config)
         source_dir = args.source_dir or _default_output_dir(loaded.path, loaded.spec.dataset.output_dir)
         repo_dir = args.repo_dir or _default_repo_dir(source_dir)
-        print(stage_hub_repository(loaded, source_dir=source_dir, repo_dir=repo_dir))
+        print(
+            stage_hub_repository(
+                loaded,
+                source_dir=source_dir,
+                repo_dir=repo_dir,
+                workers=args.workers,
+            )
+        )
         return 0
 
     if args.command == "hub" and args.hub_command == "validate":

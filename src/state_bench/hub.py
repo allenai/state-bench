@@ -3,16 +3,20 @@
 from __future__ import annotations
 
 import json
+import statistics
+from bisect import bisect_left
 from collections import defaultdict
-from itertools import batched
+from collections.abc import Iterable, Iterator
+from concurrent.futures import ThreadPoolExecutor
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
 import yaml
 from tqdm.auto import tqdm
 
-from state_bench.config import LoadedExperiment, TokenStratificationSpec
-from state_bench.io import read_jsonl, sha256_file
+from state_bench.config import LoadedExperiment, TokenStratificationSpec, TokenStratumSpec
+from state_bench.io import sha256_file
 from state_bench.stats import TokenizerLike, load_tokenizer
 
 
@@ -21,6 +25,7 @@ def stage_hub_repository(
     *,
     source_dir: Path,
     repo_dir: Path,
+    workers: int | None = None,
 ) -> Path:
     """Create a complete local Hub repository without network access."""
 
@@ -46,6 +51,9 @@ def stage_hub_repository(
     )
 
     configs: list[dict[str, Any]] = []
+    staging_workers = workers if workers is not None else loaded.spec.huggingface.staging_workers
+    if staging_workers < 1:
+        raise ValueError("staging workers must be positive")
     token_strata = loaded.spec.huggingface.token_strata
     tokenizer = (
         load_tokenizer(token_strata.tokenizer, revision=token_strata.revision)
@@ -60,22 +68,31 @@ def stage_hub_repository(
                     data_dir,
                     "canonical",
                     shard_size=loaded.spec.output.shard_size,
+                    target_shard_bytes=loaded.spec.output.target_shard_bytes,
                     progress=progress,
                 )
             )
-        for config_dir in sorted((source_dir / "rendered").iterdir()):
-            if config_dir.is_dir():
-                configs.append(
-                    _stage_config(
-                        config_dir,
-                        data_dir,
-                        config_dir.name,
-                        shard_size=loaded.spec.output.shard_size,
-                        token_strata=token_strata,
-                        tokenizer=tokenizer,
-                        progress=progress,
-                    )
-                )
+        rendered_dirs = [
+            config_dir for config_dir in sorted((source_dir / "rendered").iterdir()) if config_dir.is_dir()
+        ]
+
+        def stage_rendered_config(config_dir: Path) -> dict[str, Any]:
+            return _stage_config(
+                config_dir,
+                data_dir,
+                config_dir.name,
+                shard_size=loaded.spec.output.shard_size,
+                target_shard_bytes=loaded.spec.output.target_shard_bytes,
+                token_strata=token_strata,
+                tokenizer=tokenizer,
+                progress=progress,
+            )
+
+        if staging_workers == 1:
+            configs.extend(stage_rendered_config(config_dir) for config_dir in rendered_dirs)
+        else:
+            with ThreadPoolExecutor(max_workers=staging_workers) as executor:
+                configs.extend(executor.map(stage_rendered_config, rendered_dirs))
     finally:
         progress.close()
 
@@ -109,12 +126,20 @@ def stage_hub_repository(
         disable=None,
     )
     try:
-        for path in staged_files:
+        if staging_workers == 1:
+            hashes: Iterable[str] = (sha256_file(path) for path in staged_files)
+            executor = None
+        else:
+            executor = ThreadPoolExecutor(max_workers=staging_workers)
+            hashes = executor.map(sha256_file, staged_files)
+        for path, digest in zip(staged_files, hashes, strict=True):
             relative_path = str(path.relative_to(repo_dir))
             hash_progress.set_postfix(file=relative_path, refresh=False)
-            hub_hashes[relative_path] = sha256_file(path)
+            hub_hashes[relative_path] = digest
             hash_progress.update()
     finally:
+        if executor is not None:
+            executor.shutdown()
         hash_progress.close()
     source_manifest["hub_files"] = hub_hashes
     (repo_dir / "manifest.json").write_text(
@@ -246,6 +271,7 @@ def _stage_config(
     config_name: str,
     *,
     shard_size: int,
+    target_shard_bytes: int,
     token_strata: TokenStratificationSpec | None = None,
     tokenizer: TokenizerLike | None = None,
     progress: Any | None = None,
@@ -259,96 +285,264 @@ def _stage_config(
         split = jsonl_path.stem
         if token_strata is None:
             _set_progress_context(progress, config=config_name, split=split, phase="parquet")
-            _jsonl_to_parquet_shards(
-                jsonl_path,
+            writer = _ParquetShardWriter(
                 destination,
                 split=split,
-                shard_size=shard_size,
+                max_rows=shard_size,
+                target_bytes=target_shard_bytes,
                 progress=progress,
             )
+            for record, estimated_bytes in _iter_jsonl_records(jsonl_path):
+                writer.add(record, estimated_bytes=estimated_bytes)
+            if not writer.finish():
+                raise ValueError(f"cannot infer a Parquet schema from empty split: {jsonl_path}")
             data_files.append({"split": split, "path": f"data/{config_name}/{split}-*.parquet"})
             continue
         if tokenizer is None:
             raise ValueError("tokenizer is required when token strata are configured")
-        records_by_stratum = _partition_records_by_token_stratum(
-            read_jsonl(jsonl_path),
-            spec=token_strata,
-            tokenizer=tokenizer,
-            progress=progress,
-            progress_weight=0.5,
-            progress_context={"config": config_name, "split": split, "phase": "tokenize"},
-        )
-        for stratum in token_strata.ranges:
-            records = records_by_stratum[stratum.name]
-            if not records:
-                continue
-            stratified_split = f"{split}__{stratum.name}"
-            _set_progress_context(
-                progress,
-                config=config_name,
-                split=stratified_split,
-                phase="parquet",
-            )
-            _records_to_parquet_shards(
-                records,
+        writers = {
+            stratum.name: _ParquetShardWriter(
                 destination,
-                split=stratified_split,
-                shard_size=shard_size,
+                split=f"{split}__{stratum.name}",
+                max_rows=shard_size,
+                target_bytes=target_shard_bytes,
                 progress=progress,
                 progress_weight=0.5,
             )
-            data_files.append(
-                {
-                    "split": stratified_split,
-                    "path": f"data/{config_name}/{stratified_split}-*.parquet",
-                }
+            for stratum in token_strata.ranges
+        }
+        if token_strata.mode == "sampled":
+            _set_progress_context(progress, config=config_name, split=split, phase="calibrate")
+            estimator = _calibrate_token_length_estimator(jsonl_path, token_strata, tokenizer)
+            _set_progress_context(progress, config=config_name, split=split, phase="estimate")
+            for record, estimated_bytes in _iter_jsonl_records(jsonl_path):
+                text = _tokenization_text(record, token_strata)
+                token_length = estimator.estimate(record, text)
+                stratum = _token_stratum(token_length, token_strata)
+                writers[stratum.name].add(
+                    {
+                        **record,
+                        "token_length": token_length,
+                        "token_length_is_estimate": True,
+                        "token_stratum": stratum.name,
+                    },
+                    estimated_bytes=estimated_bytes,
+                )
+                if progress is not None:
+                    progress.update(0.5)
+        else:
+            _set_progress_context(progress, config=config_name, split=split, phase="tokenize")
+            for batch in _character_bounded_batches(
+                _iter_jsonl_records(jsonl_path),
+                spec=token_strata,
+            ):
+                texts = [text for _, _, text in batch]
+                lengths = _token_lengths(tokenizer, texts, token_strata)
+                for (record, estimated_bytes, _), token_length in zip(batch, lengths, strict=True):
+                    stratum = _token_stratum(token_length, token_strata)
+                    writers[stratum.name].add(
+                        {
+                            **record,
+                            "token_length": token_length,
+                            "token_length_is_estimate": False,
+                            "token_stratum": stratum.name,
+                        },
+                        estimated_bytes=estimated_bytes,
+                    )
+                if progress is not None:
+                    progress.update(len(batch) * 0.5)
+        for stratum in token_strata.ranges:
+            writer = writers[stratum.name]
+            _set_progress_context(
+                progress,
+                config=config_name,
+                split=writer.split,
+                phase="parquet",
             )
+            if writer.finish():
+                data_files.append(
+                    {
+                        "split": writer.split,
+                        "path": f"data/{config_name}/{writer.split}-*.parquet",
+                    }
+                )
     if not data_files:
         raise FileNotFoundError(f"no generated splits found under {source_dir}")
     return {"config_name": config_name, "data_files": data_files}
 
 
-def _jsonl_to_parquet_shards(
-    source: Path,
-    destination: Path,
+class _ParquetShardWriter:
+    """Buffer bounded data and finalize deterministic shard names."""
+
+    def __init__(
+        self,
+        destination: Path,
+        *,
+        split: str,
+        max_rows: int,
+        target_bytes: int,
+        progress: Any | None = None,
+        progress_weight: float = 1.0,
+    ) -> None:
+        self.destination = destination
+        self.split = split
+        self.max_rows = max_rows
+        self.target_bytes = target_bytes
+        self.progress = progress
+        self.progress_weight = progress_weight
+        self.buffer: list[dict[str, Any]] = []
+        self.buffer_bytes = 0
+        self.parts: list[Path] = []
+
+    def add(self, record: dict[str, Any], *, estimated_bytes: int) -> None:
+        if self.buffer and (
+            len(self.buffer) >= self.max_rows or self.buffer_bytes + estimated_bytes > self.target_bytes
+        ):
+            self._flush()
+        self.buffer.append(record)
+        self.buffer_bytes += estimated_bytes
+
+    def finish(self) -> bool:
+        if self.buffer:
+            self._flush()
+        num_shards = len(self.parts)
+        for shard_index, part_path in enumerate(self.parts):
+            final_path = self.destination / (f"{self.split}-{shard_index:05d}-of-{num_shards:05d}.parquet")
+            part_path.rename(final_path)
+        return bool(self.parts)
+
+    def _flush(self) -> None:
+        _require_hub_dependencies()
+        import pyarrow as pa
+        import pyarrow.parquet as parquet
+
+        table = _arrow_table(pa, self.buffer)
+        part_path = self.destination / f".{self.split}-part-{len(self.parts):05d}.parquet"
+        parquet.write_table(table, part_path, compression="zstd")
+        self.parts.append(part_path)
+        if self.progress is not None:
+            self.progress.update(len(self.buffer) * self.progress_weight)
+        self.buffer = []
+        self.buffer_bytes = 0
+
+
+def _iter_jsonl_records(path: Path) -> Iterator[tuple[dict[str, Any], int]]:
+    with path.open("rb") as handle:
+        for line in handle:
+            if line.strip():
+                yield json.loads(line), len(line)
+
+
+def _character_bounded_batches(
+    records: Iterable[tuple[dict[str, Any], int]],
     *,
-    split: str,
-    shard_size: int,
-    progress: Any | None = None,
-) -> None:
-    records = read_jsonl(source)
-    if not records:
-        raise ValueError(f"cannot infer a Parquet schema from empty split: {source}")
-    _records_to_parquet_shards(
-        records,
-        destination,
-        split=split,
-        shard_size=shard_size,
-        progress=progress,
+    spec: TokenStratificationSpec,
+) -> Iterator[list[tuple[dict[str, Any], int, str]]]:
+    batch: list[tuple[dict[str, Any], int, str]] = []
+    characters = 0
+    for record, estimated_bytes in records:
+        text = _tokenization_text(record, spec)
+        if batch and (len(batch) >= spec.batch_size or characters + len(text) > spec.max_batch_characters):
+            yield batch
+            batch = []
+            characters = 0
+        batch.append((record, estimated_bytes, text))
+        characters += len(text)
+    if batch:
+        yield batch
+
+
+@dataclass(frozen=True, slots=True)
+class _TokenLengthEstimator:
+    points_by_group: dict[str, tuple[tuple[int, int], ...]]
+    global_points: tuple[tuple[int, int], ...]
+
+    def estimate(self, record: dict[str, Any], text: str) -> int:
+        points = self.points_by_group.get(_calibration_group(record), self.global_points)
+        return _interpolate_token_length(points, len(text))
+
+
+def _calibrate_token_length_estimator(
+    path: Path,
+    spec: TokenStratificationSpec,
+    tokenizer: TokenizerLike,
+) -> _TokenLengthEstimator:
+    scanned: list[tuple[dict[str, Any], int, str]] = []
+    for index, (record, estimated_bytes) in enumerate(_iter_jsonl_records(path)):
+        if index >= spec.calibration_scan_rows:
+            break
+        scanned.append((record, estimated_bytes, _tokenization_text(record, spec)))
+    if not scanned:
+        raise ValueError(f"cannot calibrate token lengths from empty split: {path}")
+
+    candidates: list[tuple[dict[str, Any], int, str]] = []
+    by_group: dict[str, list[tuple[dict[str, Any], int, str]]] = defaultdict(list)
+    for item in scanned:
+        by_group[_calibration_group(item[0])].append(item)
+    for items in by_group.values():
+        candidates.extend(_quantile_samples(items, spec.calibration_samples_per_group))
+
+    samples_by_group: dict[str, list[tuple[int, int]]] = defaultdict(list)
+    global_samples: list[tuple[int, int]] = []
+    sized_candidates = ((record, estimated_bytes) for record, estimated_bytes, _ in candidates)
+    for batch in _character_bounded_batches(sized_candidates, spec=spec):
+        lengths = _token_lengths(tokenizer, [text for _, _, text in batch], spec)
+        for (record, _, text), token_length in zip(batch, lengths, strict=True):
+            point = (len(text), token_length)
+            samples_by_group[_calibration_group(record)].append(point)
+            global_samples.append(point)
+    return _TokenLengthEstimator(
+        points_by_group={group: _consolidate_points(points) for group, points in samples_by_group.items()},
+        global_points=_consolidate_points(global_samples),
     )
 
 
-def _records_to_parquet_shards(
-    records: list[dict[str, Any]],
-    destination: Path,
-    *,
-    split: str,
-    shard_size: int,
-    progress: Any | None = None,
-    progress_weight: float = 1.0,
-) -> None:
-    _require_hub_dependencies()
-    import pyarrow as pa
-    import pyarrow.parquet as parquet
+def _quantile_samples(
+    items: list[tuple[dict[str, Any], int, str]],
+    count: int,
+) -> list[tuple[dict[str, Any], int, str]]:
+    ordered = sorted(items, key=lambda item: len(item[2]))
+    if len(ordered) <= count:
+        return ordered
+    if count == 1:
+        return [ordered[len(ordered) // 2]]
+    indices = {round(index * (len(ordered) - 1) / (count - 1)) for index in range(count)}
+    return [ordered[index] for index in sorted(indices)]
 
-    num_shards = (len(records) + shard_size - 1) // shard_size
-    for shard_index in range(num_shards):
-        chunk = records[shard_index * shard_size : (shard_index + 1) * shard_size]
-        table = _arrow_table(pa, chunk)
-        name = f"{split}-{shard_index:05d}-of-{num_shards:05d}.parquet"
-        parquet.write_table(table, destination / name, compression="zstd")
-        if progress is not None:
-            progress.update(len(chunk) * progress_weight)
+
+def _calibration_group(record: dict[str, Any]) -> str:
+    return str(record.get("filler_distraction") or "none")
+
+
+def _consolidate_points(points: list[tuple[int, int]]) -> tuple[tuple[int, int], ...]:
+    tokens_by_characters: dict[int, list[int]] = defaultdict(list)
+    for characters, tokens in points:
+        tokens_by_characters[characters].append(tokens)
+    return tuple(
+        (characters, round(statistics.median(tokens)))
+        for characters, tokens in sorted(tokens_by_characters.items())
+    )
+
+
+def _interpolate_token_length(points: tuple[tuple[int, int], ...], characters: int) -> int:
+    if not points:
+        raise ValueError("token-length estimator has no calibration points")
+    if len(points) == 1:
+        sample_characters, sample_tokens = points[0]
+        if sample_characters == 0:
+            return sample_tokens
+        return max(0, round(characters * sample_tokens / sample_characters))
+    position = bisect_left([point[0] for point in points], characters)
+    if position == 0:
+        left, right = points[0], points[1]
+    elif position == len(points):
+        left, right = points[-2], points[-1]
+    else:
+        left, right = points[position - 1], points[position]
+    if left[0] == right[0]:
+        return left[1]
+    estimate = left[1] + (characters - left[0]) * (right[1] - left[1]) / (right[0] - left[0])
+    return max(0, round(estimate))
 
 
 def _partition_records_by_token_stratum(
@@ -360,42 +554,58 @@ def _partition_records_by_token_stratum(
     progress_weight: float = 1.0,
     progress_context: dict[str, str] | None = None,
 ) -> dict[str, list[dict[str, Any]]]:
-    """Annotate and partition rendered rows using exact tokenizer lengths."""
+    """Annotate and partition in-memory rows; Hub staging streams from disk."""
 
     result = {stratum.name: [] for stratum in spec.ranges}
     if progress_context is not None:
         _set_progress_context(progress, **progress_context)
-    for record_batch in batched(records, spec.batch_size, strict=False):
-        batch = list(record_batch)
-        texts = []
-        for record in batch:
-            if "prefix" not in record:
-                raise ValueError("token stratification requires a prefix field")
-            text = str(record["prefix"])
-            if spec.field == "prefix+completion":
-                if "completion" not in record:
-                    raise ValueError("prefix+completion stratification requires a completion field")
-                text += spec.joiner + str(record["completion"])
-            texts.append(text)
-        encoded = tokenizer(
-            texts,
-            add_special_tokens=spec.add_special_tokens,
-            padding=False,
-            truncation=False,
-        )
-        lengths = [len(token_ids) for token_ids in encoded["input_ids"]]
-        for record, token_length in zip(batch, lengths, strict=True):
-            stratum = next(
-                item
-                for item in spec.ranges
-                if token_length >= item.min_tokens
-                and (item.max_tokens is None or token_length < item.max_tokens)
-            )
+    sized_records = ((record, len(_tokenization_text(record, spec))) for record in records)
+    for batch in _character_bounded_batches(sized_records, spec=spec):
+        lengths = _token_lengths(tokenizer, [text for _, _, text in batch], spec)
+        for (record, _, _), token_length in zip(batch, lengths, strict=True):
+            stratum = _token_stratum(token_length, spec)
             annotated = {**record, "token_length": token_length, "token_stratum": stratum.name}
             result[stratum.name].append(annotated)
         if progress is not None:
             progress.update(len(batch) * progress_weight)
     return result
+
+
+def _tokenization_text(record: dict[str, Any], spec: TokenStratificationSpec) -> str:
+    if "prefix" not in record:
+        raise ValueError("token stratification requires a prefix field")
+    text = str(record["prefix"])
+    if spec.field == "prefix+completion":
+        if "completion" not in record:
+            raise ValueError("prefix+completion stratification requires a completion field")
+        text += spec.joiner + str(record["completion"])
+    return text
+
+
+def _token_lengths(
+    tokenizer: TokenizerLike,
+    texts: list[str],
+    spec: TokenStratificationSpec,
+) -> list[int]:
+    backend = getattr(tokenizer, "backend_tokenizer", None)
+    if backend is not None:
+        encodings = backend.encode_batch(texts, add_special_tokens=spec.add_special_tokens)
+        return [len(encoding) for encoding in encodings]
+    encoded = tokenizer(
+        texts,
+        add_special_tokens=spec.add_special_tokens,
+        padding=False,
+        truncation=False,
+    )
+    return [len(token_ids) for token_ids in encoded["input_ids"]]
+
+
+def _token_stratum(token_length: int, spec: TokenStratificationSpec) -> TokenStratumSpec:
+    return next(
+        item
+        for item in spec.ranges
+        if token_length >= item.min_tokens and (item.max_tokens is None or token_length < item.max_tokens)
+    )
 
 
 def _set_progress_context(progress: Any | None, **context: str) -> None:
@@ -424,23 +634,27 @@ def _arrow_table(pa: Any, records: list[dict[str, Any]]) -> Any:
         normalized.append(normalized_record)
 
     inferred = pa.Table.from_pylist(normalized)
-    operation_type = pa.list_(
-        pa.struct(
-            [
-                pa.field("op", pa.string(), nullable=False),
-                pa.field("target", pa.int64(), nullable=False),
-                pa.field("value", pa.int64()),
-                pa.field("source", pa.int64()),
-            ]
-        )
-    )
-    schema = pa.schema(
-        [
-            pa.field(field.name, operation_type) if field.name == "operations" else field
-            for field in inferred.schema
-        ]
-    )
-    return pa.Table.from_pylist(normalized, schema=schema)
+    explicit_types = {
+        "operations": pa.list_(
+            pa.struct(
+                [
+                    pa.field("op", pa.string(), nullable=False),
+                    pa.field("target", pa.int64(), nullable=False),
+                    pa.field("value", pa.int64()),
+                    pa.field("source", pa.int64()),
+                ]
+            )
+        ),
+        "filler_distraction": pa.string(),
+        "target_extra_assignments": pa.int64(),
+    }
+    for name, data_type in explicit_types.items():
+        if name not in inferred.column_names:
+            continue
+        index = inferred.column_names.index(name)
+        values = [record.get(name) for record in normalized]
+        inferred = inferred.set_column(index, pa.field(name, data_type), pa.array(values, type=data_type))
+    return inferred
 
 
 def _dataset_card(*, metadata: dict[str, Any], loaded: LoadedExperiment) -> str:
@@ -454,12 +668,20 @@ def _dataset_card(*, metadata: dict[str, Any], loaded: LoadedExperiment) -> str:
             f"{item.max_tokens if item.max_tokens is not None else 'infinity'})"
             for item in strata.ranges
         )
+        length_method = (
+            f"estimated from {strata.calibration_samples_per_group} length-quantile "
+            "calibration rows per filler style"
+            if strata.mode == "sampled"
+            else "measured by exact per-row tokenization"
+        )
         strata_description = f"""
 
 Rendered configs are partitioned into tokenizer-length splits named
 `<split>__<stratum>` using `{strata.tokenizer}` over `{strata.field}`. The
-half-open strata are {interval_text}. Each row records its exact `token_length`
-and `token_stratum`. The canonical config retains the unstratified base splits.
+half-open strata are {interval_text}. Each row records its `token_length`
+and `token_stratum`; token lengths are {length_method}. The
+`token_length_is_estimate` field distinguishes sampled estimates from exact
+measurements. The canonical config retains the unstratified base splits.
 """
     return f"""---
 {frontmatter}

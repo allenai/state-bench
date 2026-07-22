@@ -159,11 +159,14 @@ uv run state-bench config check configs/experiments/long-context.yaml
 uv run state-bench build configs/experiments/long-context.yaml
 ```
 
-The preset also configures exact tokenizer-length strata for Hub staging:
+The preset also configures sampled tokenizer-length strata for Hub staging:
 `[0, 100k)`, `[100k, 500k)`, `[500k, 1m)`, and `[1m, infinity)`. Token counts
-use the OLMo 3 tokenizer over each rendered prompt prefix. Stage this preset
-with both optional dependency groups because stratification requires the
-tokenizer as well as Parquet support:
+are estimated from formatter-specific character/token calibration examples
+using the OLMo 3 tokenizer over each rendered prompt prefix. Only 16
+length-quantile rows per filler style are tokenized; the remaining rows use a
+piecewise-linear character-to-token estimate. Stage this preset with both
+optional dependency groups because calibration requires the tokenizer as well
+as Parquet support:
 
 ```bash
 uv run --extra hub --extra analysis state-bench hub stage \
@@ -176,7 +179,9 @@ staged to `build/state-tracking-long-context-v1` by default.
 Rendered configs then expose independently loadable splits such as
 `test__tokens_0_100k`, `test__tokens_100k_500k`, `test__tokens_500k_1m`, and
 `test__tokens_1m_plus`. Every staged row includes `token_length` and
-`token_stratum`; the canonical config retains the base `test` split.
+`token_stratum`, with `token_length_is_estimate: true`; the canonical config
+retains the base `test` split. Set `token_strata.mode: exact` when exact
+per-row tokenization is worth the additional staging time.
 
 ### No-op filler lines
 
@@ -413,6 +418,16 @@ name under a sibling `build/` directory. For example,
 `data/state-tracking-v1` becomes `build/state-tracking-v1`. An explicit
 `--source-dir` changes the inferred basename, while `--repo-dir` overrides the
 destination completely.
+
+Staging streams JSONL rows into bounded Parquet buffers rather than loading an
+entire rendered config into memory. A shard is flushed when either
+`output.shard_size` rows or `output.target_shard_bytes` estimated input bytes
+are reached. Token-stratified configs also bound each tokenizer batch by both
+`batch_size` and `max_batch_characters`; the latter prevents several
+million-token prompts from being materialized together. Independent rendered
+configs can stage concurrently via `huggingface.staging_workers` or the
+`hub stage --workers` override. Keep this small for long-context data; the
+provided preset uses two workers.
 
 Each `(formatter, complexity)` pair becomes a Hugging Face config, such as
 `integer-code--periodic`. Variable counts and assignment depths remain row

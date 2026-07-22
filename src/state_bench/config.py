@@ -171,6 +171,7 @@ class OutputSpec(StrictModel):
     include_canonical_trace: bool = True
     include_final_state: bool = True
     shard_size: PositiveInt = 100_000
+    target_shard_bytes: PositiveInt = 256_000_000
     multiple_choice: MultipleChoiceSpec = MultipleChoiceSpec()
 
 
@@ -204,10 +205,14 @@ class TokenStratificationSpec(StrictModel):
 
     tokenizer: str = Field(min_length=1)
     revision: str | None = None
+    mode: Literal["exact", "sampled"] = "exact"
     field: Literal["prefix", "prefix+completion"] = "prefix"
     joiner: str = ""
     add_special_tokens: bool = False
     batch_size: PositiveInt = 1
+    max_batch_characters: PositiveInt = 16_000_000
+    calibration_scan_rows: PositiveInt = 128
+    calibration_samples_per_group: PositiveInt = 16
     ranges: list[TokenStratumSpec]
 
     @model_validator(mode="after")
@@ -230,6 +235,7 @@ class HuggingFaceSpec(StrictModel):
     include_canonical_config: bool = True
     config_naming: str = "{formatter}--{complexity}"
     data_format: Literal["parquet"] = "parquet"
+    staging_workers: PositiveInt = 1
     token_strata: TokenStratificationSpec | None = None
     repository: HubRepositorySpec = HubRepositorySpec()
     card: HubCardSpec = HubCardSpec()

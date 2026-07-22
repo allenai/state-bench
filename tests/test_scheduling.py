@@ -91,6 +91,13 @@ def test_long_context_experiment_config_loads() -> None:
         assert condition.extra_assignments.min_samples_per_bucket == 20
     token_strata = loaded.spec.huggingface.token_strata
     assert token_strata is not None
+    assert loaded.spec.huggingface.staging_workers == 2
+    assert token_strata.mode == "sampled"
+    assert token_strata.batch_size == 4
+    assert token_strata.max_batch_characters == 16_000_000
+    assert token_strata.calibration_scan_rows == 128
+    assert token_strata.calibration_samples_per_group == 16
+    assert loaded.spec.output.target_shard_bytes == 128_000_000
     assert [item.max_tokens for item in token_strata.ranges] == [
         100_000,
         500_000,
