@@ -167,9 +167,11 @@ tokenizer as well as Parquet support:
 
 ```bash
 uv run --extra hub --extra analysis state-bench hub stage \
-  configs/experiments/long-context.yaml \
-  --repo-dir build/state-tracking-long-context-hf
+  configs/experiments/long-context.yaml
 ```
+
+With this config, the source `data/state-tracking-long-context-v1` directory is
+staged to `build/state-tracking-long-context-v1` by default.
 
 Rendered configs then expose independently loadable splits such as
 `test__tokens_0_100k`, `test__tokens_100k_500k`, `test__tokens_500k_1m`, and
@@ -401,11 +403,16 @@ dataset card, source YAML files, and a checksummed manifest:
 
 ```bash
 uv run --extra hub state-bench hub stage \
-  configs/experiments/default.yaml \
-  --repo-dir build/state-tracking-hf
+  configs/experiments/default.yaml
 
-uv run --extra hub state-bench hub validate build/state-tracking-hf
+uv run --extra hub state-bench hub validate build/state-tracking-v1
 ```
+
+When `--repo-dir` is omitted, staging mirrors the configured data directory
+name under a sibling `build/` directory. For example,
+`data/state-tracking-v1` becomes `build/state-tracking-v1`. An explicit
+`--source-dir` changes the inferred basename, while `--repo-dir` overrides the
+destination completely.
 
 Each `(formatter, complexity)` pair becomes a Hugging Face config, such as
 `integer-code--periodic`. Variable counts and assignment depths remain row
@@ -414,7 +421,7 @@ columns. An optional `canonical` config contains the underlying traces.
 Preview an upload without authentication or network writes:
 
 ```bash
-uv run state-bench hub push build/state-tracking-hf \
+uv run state-bench hub push build/state-tracking-v1 \
   --repo-id organization/state-bench \
   --dry-run
 ```
@@ -422,7 +429,7 @@ uv run state-bench hub push build/state-tracking-hf \
 After `hf auth login`, upload explicitly:
 
 ```bash
-uv run --extra hub state-bench hub push build/state-tracking-hf \
+uv run --extra hub state-bench hub push build/state-tracking-v1 \
   --repo-id organization/state-bench
 ```
 
@@ -433,10 +440,10 @@ rejected unless the local directory looks like a complete staged repository.
 Preview the upload and deletion pattern without changing the Hub first:
 
 ```bash
-uv run state-bench hub push build/state-tracking-hf \
+uv run state-bench hub push build/state-tracking-v1 \
   --repo-id organization/state-bench --sync --dry-run
 
-uv run --extra hub state-bench hub push build/state-tracking-hf \
+uv run --extra hub state-bench hub push build/state-tracking-v1 \
   --repo-id organization/state-bench --sync
 ```
 

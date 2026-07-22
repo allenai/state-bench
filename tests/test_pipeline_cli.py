@@ -8,7 +8,7 @@ from types import ModuleType
 import pytest
 import yaml
 
-from state_bench.cli import main
+from state_bench.cli import _default_repo_dir, main
 from state_bench.config import TokenStratificationSpec, load_experiment
 from state_bench.hub import (
     _partition_records_by_token_stratum,
@@ -87,6 +87,19 @@ def test_cli_config_check_and_build(tmp_path: Path, capsys: object) -> None:
     assert main(["config", "check", str(experiment)]) == 0
     assert main(["build", str(experiment)]) == 0
     assert (tmp_path / "output/canonical/train.jsonl").is_file()
+
+
+def test_default_hub_repo_dir_mirrors_configured_data_dir(tmp_path: Path) -> None:
+    source_dir = tmp_path / "data" / "state-tracking-long-context-v1"
+    assert _default_repo_dir(source_dir) == (tmp_path / "build" / "state-tracking-long-context-v1")
+
+
+def test_default_hub_repo_dir_uses_source_name_for_an_override(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    assert _default_repo_dir(tmp_path / "custom-source") == tmp_path / "build" / "custom-source"
 
 
 def test_hub_push_dry_run_needs_no_optional_dependencies(tmp_path: Path) -> None:

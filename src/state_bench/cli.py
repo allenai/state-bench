@@ -64,7 +64,11 @@ def build_parser() -> argparse.ArgumentParser:
     stage = hub_commands.add_parser("stage", help="Build a local Hugging Face repository.")
     stage.add_argument("config", type=Path)
     stage.add_argument("--source-dir", type=Path)
-    stage.add_argument("--repo-dir", type=Path, required=True)
+    stage.add_argument(
+        "--repo-dir",
+        type=Path,
+        help="Defaults to a sibling build/<source-directory-name> path.",
+    )
 
     validate = hub_commands.add_parser("validate", help="Validate a staged repository offline.")
     validate.add_argument("repo_dir", type=Path)
@@ -145,7 +149,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     if args.command == "hub" and args.hub_command == "stage":
         loaded = load_experiment(args.config)
         source_dir = args.source_dir or _default_output_dir(loaded.path, loaded.spec.dataset.output_dir)
-        print(stage_hub_repository(loaded, source_dir=source_dir, repo_dir=args.repo_dir))
+        repo_dir = args.repo_dir or _default_repo_dir(source_dir)
+        print(stage_hub_repository(loaded, source_dir=source_dir, repo_dir=repo_dir))
         return 0
 
     if args.command == "hub" and args.hub_command == "validate":
@@ -181,6 +186,15 @@ def _default_output_dir(experiment_path: Path, output_dir: Path) -> Path:
     if output_dir.is_absolute():
         return output_dir
     return (experiment_path.resolve().parent / output_dir).resolve()
+
+
+def _default_repo_dir(source_dir: Path) -> Path:
+    """Mirror data/<dataset> as build/<dataset> when no staging path is given."""
+
+    resolved = source_dir.resolve()
+    if resolved.parent.name == "data":
+        return resolved.parent.with_name("build") / resolved.name
+    return Path.cwd().resolve() / "build" / resolved.name
 
 
 if __name__ == "__main__":
