@@ -97,6 +97,28 @@ Configuration models are strict and versioned: unknown keys, invalid family
 parameters, insufficient formatter vocabularies, and invalid placeholders fail
 during `config check`.
 
+Splits may render only a subset of the configured formats and may reject any
+semantic trace already present in an earlier split:
+
+```yaml
+splits:
+  test:
+    samples_per_condition: 340
+  train:
+    samples_per_condition: 340
+    formatters: [integer-code]
+    disjoint_from: [test]
+```
+
+The first generation attempt keeps the usual split-specific seed. If any of
+its periodic, aperiodic, or r-trivial rows has an `instance_id` found in an
+excluded split, that source triplet is deterministically resampled. Excluded
+splits must appear earlier in the mapping, which lets an existing test
+distribution remain unchanged while later splits adapt around it.
+Generation conditions can likewise be scoped with `splits: [test]` or
+`splits: [train]`, allowing different context and padding distributions without
+changing the condition indices of existing test rows.
+
 ### Long-context assignment schedules
 
 Use `distribution: log-spaced` to spread a fixed sample budget over
@@ -138,7 +160,13 @@ exactly 20 sources at every target assignment length. Both conditions emit all
 three complexity classes and every configured formatting. The assignment and
 padding caps keep the most token-dense RULER prompts below roughly one million
 tokens; padding conditions cover 0%, 25%, 50%, 75%, and 90% of final prompt
-lines. Hub Parquet shards are capped at 50 long rows apiece.
+lines. An additional integer-code test condition applies 25% padding at every
+assignment bucket, stratified across easy, medium, and hard padding. It is
+appended after the original conditions, so existing test rows retain their
+identities and contents. The training split uses only the short-trace condition
+and its simple `easy` padding style across the same five proportions. It renders
+only `integer-code` and is generated disjoint from the unchanged test
+semantics. Hub Parquet shards are capped at 50 long rows apiece.
 
 Rows include `source_example_id` and `source_instance_id` so every derived
 triplet can be joined directly. They also include `num_extra_assignments` and
@@ -208,6 +236,10 @@ proportion is crossed with each distraction level. If a prompt has `L`
 non-filler content lines and requests proportion `p`, rendering adds the nearest
 integer to `L * p / (1 - p)` filler lines. Filler is interleaved with program
 lines without changing assignment order, the canonical trace, or the answer.
+For a log-spaced assignment schedule, set
+`stratify_by_assignment_bucket: true` under `filler` to distribute every filler
+variant within every assignment-depth bucket. Each bucket must contain at least
+as many samples as there are filler variants.
 
 `formatters` is an optional condition-level filter. Omit it to render the
 condition with every experiment formatter. Each selected formatter supplies
@@ -317,7 +349,8 @@ manifest.json
 
 Every row has a unique, generation-stable `example_id`. Its content-derived
 `instance_id` identifies semantic duplicates. The manifest reports unique
-semantic counts and cross-split semantic overlap so dataset leakage is visible.
+semantic counts and cross-split semantic overlap. Splits configured with
+`disjoint_from` are generated with zero semantic overlap by construction.
 
 Rendered rows also contain four unique invalid `incorrect_completions`, a
 shuffled five-item `choices` list, and zero-based `correct_choice_index`.

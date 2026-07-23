@@ -58,6 +58,7 @@ class FillerSpec(StrictModel):
 
     proportions: list[float] = [0.0]
     distraction_levels: list[FillerDistraction] = ["easy"]
+    stratify_by_assignment_bucket: bool = False
 
     @model_validator(mode="after")
     def validate_axes(self) -> FillerSpec:
@@ -81,6 +82,7 @@ class ConditionSpec(StrictModel):
     extra_assignments: ExtraAssignmentsSpec
     filler: FillerSpec = FillerSpec()
     formatters: list[str] | None = None
+    splits: list[str] | None = None
 
     @model_validator(mode="after")
     def nonempty_variables(self) -> ConditionSpec:
@@ -93,6 +95,11 @@ class ConditionSpec(StrictModel):
                 raise ValueError("condition formatters must not be empty")
             if len(set(self.formatters)) != len(self.formatters):
                 raise ValueError("condition formatters must not contain duplicates")
+        if self.splits is not None:
+            if not self.splits:
+                raise ValueError("condition splits must not be empty")
+            if len(set(self.splits)) != len(self.splits):
+                raise ValueError("condition splits must not contain duplicates")
         return self
 
 
@@ -108,7 +115,17 @@ class GenerationSpec(StrictModel):
     def validate_conditions(self) -> GenerationSpec:
         if not self.conditions:
             raise ValueError("conditions must not be empty")
-        seen: set[tuple[Complexity, int, int, str, str, tuple[str, ...] | None]] = set()
+        seen: set[
+            tuple[
+                Complexity,
+                int,
+                int,
+                str,
+                str,
+                tuple[str, ...] | None,
+                tuple[str, ...] | None,
+            ]
+        ] = set()
         for condition in self.conditions:
             if condition.complexity is not Complexity.PERIODIC:
                 raise ValueError(
@@ -123,6 +140,7 @@ class GenerationSpec(StrictModel):
                     condition.extra_assignments.model_dump_json(),
                     condition.filler.model_dump_json(),
                     tuple(condition.formatters) if condition.formatters is not None else None,
+                    tuple(condition.splits) if condition.splits is not None else None,
                 )
                 if key in seen:
                     raise ValueError(f"duplicate condition: {key}")
@@ -152,6 +170,19 @@ class DatasetSpec(StrictModel):
 
 class SplitSpec(StrictModel):
     samples_per_condition: int = Field(ge=0)
+    formatters: list[str] | None = None
+    disjoint_from: list[str] = []
+
+    @model_validator(mode="after")
+    def validate_scope(self) -> SplitSpec:
+        if self.formatters is not None:
+            if not self.formatters:
+                raise ValueError("split formatters must not be empty")
+            if len(set(self.formatters)) != len(self.formatters):
+                raise ValueError("split formatters must not contain duplicates")
+        if len(set(self.disjoint_from)) != len(self.disjoint_from):
+            raise ValueError("split disjoint_from must not contain duplicates")
+        return self
 
 
 class FormatterReference(StrictModel):
@@ -272,6 +303,29 @@ class ExperimentSpec(StrictModel):
             raise ValueError("formatters must not be empty")
         if any(not split for split in self.splits):
             raise ValueError("split names must not be empty")
+        preceding_splits: set[str] = set()
+        for split_name, split in self.splits.items():
+            if split_name in split.disjoint_from:
+                raise ValueError(f"split {split_name!r} cannot be disjoint from itself")
+            unknown = set(split.disjoint_from) - self.splits.keys()
+            if unknown:
+                raise ValueError(f"split {split_name!r} has unknown disjoint_from splits: {sorted(unknown)}")
+            unavailable = set(split.disjoint_from) - preceding_splits
+            if unavailable:
+                raise ValueError(
+                    f"split {split_name!r} must appear after its disjoint_from splits: {sorted(unavailable)}"
+                )
+            preceding_splits.add(split_name)
+        for condition in self.generation.conditions:
+            unknown = set(condition.splits or self.splits) - self.splits.keys()
+            if unknown:
+                raise ValueError(f"condition references unknown splits: {sorted(unknown)}")
+        for split_name in self.splits:
+            if not any(
+                condition.splits is None or split_name in condition.splits
+                for condition in self.generation.conditions
+            ):
+                raise ValueError(f"split {split_name!r} has no generation conditions")
         return self
 
 
@@ -424,6 +478,7 @@ def load_experiment(path: str | Path) -> LoadedExperiment:
     if len(set(names)) != len(names):
         raise ValueError("formatter names must be unique")
     _validate_condition_formatters(spec, formatters)
+    _validate_split_formatters(spec, formatters)
     _validate_formatter_capacity(spec, formatters)
     return LoadedExperiment(path=experiment_path, spec=spec, formatters=formatters)
 
@@ -504,8 +559,27 @@ def _validate_condition_formatters(
                         )
 
 
+def _validate_split_formatters(
+    experiment: ExperimentSpec,
+    formatters: tuple[FormatterSpec, ...],
+) -> None:
+    available = {formatter.name for formatter in formatters}
+    for split_name, split in experiment.splits.items():
+        unknown = set(split.formatters or available) - available
+        if unknown:
+            raise ValueError(f"split {split_name!r} references unknown formatters: {sorted(unknown)}")
+
+
 def condition_uses_formatter(condition: ConditionSpec, formatter_name: str) -> bool:
     return condition.formatters is None or formatter_name in condition.formatters
+
+
+def condition_uses_split(condition: ConditionSpec, split_name: str) -> bool:
+    return condition.splits is None or split_name in condition.splits
+
+
+def split_uses_formatter(split: SplitSpec, formatter_name: str) -> bool:
+    return split.formatters is None or formatter_name in split.formatters
 
 
 def filler_variants(spec: FillerSpec) -> tuple[tuple[float, FillerDistraction | None], ...]:
@@ -529,18 +603,17 @@ def _template_texts(value: TemplateValue) -> tuple[str, ...]:
 def _validate_schedule_budgets(experiment: ExperimentSpec) -> None:
     import random
 
-    from state_bench.scheduling import allocate_bucket_counts, build_filler_plan
+    from state_bench.scheduling import (
+        allocate_bucket_counts,
+        build_assignment_plan,
+        build_filler_plan,
+        build_stratified_filler_plan,
+    )
 
     for split_name, split in experiment.splits.items():
         for condition in experiment.generation.conditions:
-            try:
-                build_filler_plan(
-                    condition.filler,
-                    total_samples=split.samples_per_condition,
-                    rng=random.Random(0),
-                )
-            except ValueError as error:
-                raise ValueError(f"invalid filler schedule for split {split_name!r}") from error
+            if not condition_uses_split(condition, split_name):
+                continue
             if isinstance(condition.extra_assignments, LogSpacedAssignmentSchedule):
                 try:
                     allocate_bucket_counts(
@@ -549,3 +622,23 @@ def _validate_schedule_budgets(experiment: ExperimentSpec) -> None:
                     )
                 except ValueError as error:
                     raise ValueError(f"invalid assignment schedule for split {split_name!r}") from error
+            try:
+                if condition.filler.stratify_by_assignment_bucket:
+                    assignment_plan = build_assignment_plan(
+                        condition.extra_assignments,
+                        total_samples=split.samples_per_condition,
+                        rng=random.Random(0),
+                    )
+                    build_stratified_filler_plan(
+                        condition.filler,
+                        assignment_plan=assignment_plan,
+                        rng=random.Random(0),
+                    )
+                else:
+                    build_filler_plan(
+                        condition.filler,
+                        total_samples=split.samples_per_condition,
+                        rng=random.Random(0),
+                    )
+            except ValueError as error:
+                raise ValueError(f"invalid filler schedule for split {split_name!r}") from error

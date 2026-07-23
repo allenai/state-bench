@@ -165,6 +165,129 @@ def test_build_preserves_ids_across_formatters(tmp_path: Path) -> None:
     assert json.loads((output / "manifest.json").read_text())["counts"]["canonical/train"] == 6
 
 
+def test_split_scoping_and_disjoint_generation_preserve_existing_test_bytes(
+    tmp_path: Path,
+) -> None:
+    experiment = _small_experiment(tmp_path)
+    source = yaml.safe_load(experiment.read_text(encoding="utf-8"))
+    source["splits"] = {"test": {"samples_per_condition": 2}}
+    experiment.write_text(yaml.safe_dump(source, sort_keys=False), encoding="utf-8")
+    baseline = build_dataset(
+        load_experiment(experiment),
+        output_dir=tmp_path / "test-only",
+    )
+    baseline_test_files = {
+        str(path.relative_to(baseline)): path.read_bytes() for path in baseline.rglob("test.jsonl")
+    }
+
+    source["splits"]["train"] = {
+        "samples_per_condition": 2,
+        "formatters": ["integer-code"],
+        "disjoint_from": ["test"],
+    }
+    source["generation"]["conditions"][0]["splits"] = ["test"]
+    source["generation"]["conditions"].append(
+        {
+            "complexity": "periodic",
+            "splits": ["train"],
+            "formatters": ["integer-code"],
+            "num_variables": [2],
+            "num_values": 10,
+            "extra_assignments": {"min": 1, "max": 1},
+            "filler": {
+                "proportions": [0.0, 0.5],
+                "distraction_levels": ["easy"],
+            },
+        }
+    )
+    experiment.write_text(yaml.safe_dump(source, sort_keys=False), encoding="utf-8")
+    combined = build_dataset(
+        load_experiment(experiment),
+        output_dir=tmp_path / "test-and-train",
+    )
+
+    assert {
+        str(path.relative_to(combined)): path.read_bytes() for path in combined.rglob("test.jsonl")
+    } == baseline_test_files
+    assert (combined / "rendered/integer-code--periodic/train.jsonl").is_file()
+    assert not (combined / "rendered/cube-painting--periodic/train.jsonl").exists()
+    train_rows = read_jsonl(combined / "rendered/integer-code--periodic/train.jsonl")
+    assert {row["filler_distraction"] for row in train_rows} == {None, "easy"}
+    assert {row["num_extra_assignments"] for row in train_rows} == {1}
+
+    test_semantics = {row["instance_id"] for row in read_jsonl(combined / "canonical/test.jsonl")}
+    train_semantics = {row["instance_id"] for row in read_jsonl(combined / "canonical/train.jsonl")}
+    assert test_semantics.isdisjoint(train_semantics)
+    manifest = json.loads((combined / "manifest.json").read_text())
+    assert manifest["cross_split_semantic_overlap"] == {"test--train": 0}
+    assert "cube-painting--periodic/train" not in manifest["counts"]
+
+
+def test_padded_length_sweep_appends_rows_without_changing_existing_test_rows(
+    tmp_path: Path,
+) -> None:
+    experiment = _small_experiment(tmp_path)
+    source = yaml.safe_load(experiment.read_text(encoding="utf-8"))
+    source["splits"] = {"test": {"samples_per_condition": 6}}
+    experiment.write_text(yaml.safe_dump(source, sort_keys=False), encoding="utf-8")
+    baseline = build_dataset(
+        load_experiment(experiment),
+        output_dir=tmp_path / "unpadded-test",
+    )
+    baseline_files = {
+        str(path.relative_to(baseline)): path.read_bytes()
+        for path in baseline.rglob("test.jsonl")
+    }
+
+    source["generation"]["conditions"].append(
+        {
+            "complexity": "periodic",
+            "splits": ["test"],
+            "formatters": ["integer-code"],
+            "num_variables": [2],
+            "num_values": 10,
+            "extra_assignments": {
+                "distribution": "log-spaced",
+                "min": 1,
+                "max": 2,
+                "min_samples_per_bucket": 3,
+            },
+            "filler": {
+                "proportions": [0.25],
+                "distraction_levels": ["easy", "medium", "hard"],
+                "stratify_by_assignment_bucket": True,
+            },
+        }
+    )
+    experiment.write_text(yaml.safe_dump(source, sort_keys=False), encoding="utf-8")
+    combined = build_dataset(
+        load_experiment(experiment),
+        output_dir=tmp_path / "padded-test",
+    )
+
+    assert (combined / "canonical/test.jsonl").read_bytes().startswith(
+        baseline_files["canonical/test.jsonl"]
+    )
+    for complexity in ("periodic", "aperiodic", "r-trivial"):
+        integer_path = f"rendered/integer-code--{complexity}/test.jsonl"
+        cube_path = f"rendered/cube-painting--{complexity}/test.jsonl"
+        assert (combined / integer_path).read_bytes().startswith(baseline_files[integer_path])
+        assert (combined / cube_path).read_bytes() == baseline_files[cube_path]
+
+    periodic = read_jsonl(combined / "rendered/integer-code--periodic/test.jsonl")
+    added = periodic[6:]
+    assert len(added) == 6
+    by_depth: dict[int, set[str]] = {}
+    for row in added:
+        by_depth.setdefault(row["target_extra_assignments"], set()).add(
+            row["filler_distraction"]
+        )
+    assert by_depth == {
+        1: {"easy", "medium", "hard"},
+        2: {"easy", "medium", "hard"},
+    }
+
+
 def test_cli_config_check_and_build(tmp_path: Path, capsys: object) -> None:
     experiment = _small_experiment(tmp_path)
     assert main(["config", "check", str(experiment)]) == 0

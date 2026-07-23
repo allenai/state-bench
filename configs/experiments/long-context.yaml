@@ -14,6 +14,12 @@ splits:
     # assignment buckets, 340 periodic source rows gives exactly 20 samples per
     # target. Every source row produces periodic, aperiodic, and r-trivial rows.
     samples_per_condition: 340
+  train:
+    # Training uses only short traces with simple padding. Only integer-code is
+    # rendered, and any source whose semantics occur in test is resampled.
+    samples_per_condition: 340
+    formatters: [integer-code]
+    disjoint_from: [test]
 
 generation:
   query_mode: all
@@ -27,6 +33,7 @@ generation:
     # Padding is scheduled on short sources, then shared by all three derived
     # complexity classes and every selected formatter.
     - complexity: periodic
+      splits: [test]
       num_variables: [2, 4, 6]
       num_values: 10
       extra_assignments: {min: 1, max: 1}
@@ -39,6 +46,7 @@ generation:
     # Sequence-length sweeps stay unpadded so the largest traces remain
     # tractable; these rows are likewise emitted in all three classes.
     - complexity: periodic
+      splits: [test]
       num_variables: [2, 4, 6]
       num_values: 10
       extra_assignments:
@@ -51,6 +59,36 @@ generation:
         sample_decay: 1.0
         jitter_fraction: 0.0
         min_samples_per_bucket: 20
+    # Training uses only the simple dot/comment padding style on short traces.
+    - complexity: periodic
+      splits: [train]
+      formatters: [integer-code]
+      num_variables: [2, 4, 6]
+      num_values: 10
+      extra_assignments: {min: 1, max: 1}
+      filler:
+        proportions: [0.0, 0.25, 0.5, 0.75, 0.9]
+        distraction_levels: [easy]
+    # Add padded integer-code examples at every assignment depth without
+    # changing any of the existing test rows above. A moderate 25% padding
+    # share keeps even the longest hard-padding prompts tractable.
+    - complexity: periodic
+      splits: [test]
+      formatters: [integer-code]
+      num_variables: [2, 4, 6]
+      num_values: 10
+      extra_assignments:
+        distribution: log-spaced
+        min: 1
+        max: 64000
+        growth_factor: 2.0
+        sample_decay: 1.0
+        jitter_fraction: 0.0
+        min_samples_per_bucket: 20
+      filler:
+        proportions: [0.25]
+        distraction_levels: [easy, medium, hard]
+        stratify_by_assignment_bucket: true
 
 formatters:
   - config: ../formats/integer-code.yaml

@@ -13,12 +13,21 @@ from typing import Any
 
 from tqdm.auto import tqdm
 
-from state_bench.config import LoadedExperiment, condition_uses_formatter
+from state_bench.config import (
+    LoadedExperiment,
+    condition_uses_formatter,
+    condition_uses_split,
+    split_uses_formatter,
+)
 from state_bench.distractors import generate_incorrect_states
 from state_bench.generation import derive_instance, generate_periodic_source
 from state_bench.model import Complexity
 from state_bench.rendering import render_instance
-from state_bench.scheduling import build_assignment_plan, build_filler_plan
+from state_bench.scheduling import (
+    build_assignment_plan,
+    build_filler_plan,
+    build_stratified_filler_plan,
+)
 from state_bench.semantics import dependency_summary
 
 
@@ -43,8 +52,12 @@ def build_dataset(loaded: LoadedExperiment, *, output_dir: Path | None = None) -
     total_examples = sum(
         len(Complexity)
         * split.samples_per_condition
-        * sum(len(condition.num_variables) for condition in spec.generation.conditions)
-        for split in spec.splits.values()
+        * sum(
+            len(condition.num_variables)
+            for condition in spec.generation.conditions
+            if condition_uses_split(condition, split_name)
+        )
+        for split_name, split in spec.splits.items()
     )
     progress = tqdm(
         total=total_examples,
@@ -71,14 +84,25 @@ def build_dataset(loaded: LoadedExperiment, *, output_dir: Path | None = None) -
                 if condition_uses_formatter(condition, formatter.name)
             }
             for config_name in sorted(config_names):
-                for split in spec.splits:
+                for split, split_spec in spec.splits.items():
+                    if not split_uses_formatter(split_spec, formatter.name):
+                        continue
+                    if not any(
+                        condition_uses_split(condition, split)
+                        and condition_uses_formatter(condition, formatter.name)
+                        for condition in spec.generation.conditions
+                    ):
+                        continue
                     path = rendered_dir / config_name / f"{split}.jsonl"
                     path.parent.mkdir(parents=True, exist_ok=True)
                     rendered_handles[(config_name, split)] = path.open("w", encoding="utf-8")
                     generated_files.append(path)
 
         for split_name, split_spec in spec.splits.items():
+            excluded_semantics = set().union(*(split_semantics[name] for name in split_spec.disjoint_from))
             for condition_index, condition in enumerate(spec.generation.conditions):
+                if not condition_uses_split(condition, split_name):
+                    continue
                 for num_variables in condition.num_variables:
                     progress.set_postfix(
                         split=split_name,
@@ -99,19 +123,27 @@ def build_dataset(loaded: LoadedExperiment, *, output_dir: Path | None = None) -
                             )
                         ),
                     )
-                    filler_plan = build_filler_plan(
-                        condition.filler,
-                        total_samples=split_spec.samples_per_condition,
-                        rng=random.Random(
-                            derive_seed(
-                                spec.dataset.seed,
-                                "filler-plan",
-                                split_name,
-                                str(condition_index),
-                                str(num_variables),
-                            )
-                        ),
+                    filler_rng = random.Random(
+                        derive_seed(
+                            spec.dataset.seed,
+                            "filler-plan",
+                            split_name,
+                            str(condition_index),
+                            str(num_variables),
+                        )
                     )
+                    if condition.filler.stratify_by_assignment_bucket:
+                        filler_plan = build_stratified_filler_plan(
+                            condition.filler,
+                            assignment_plan=assignment_plan,
+                            rng=filler_rng,
+                        )
+                    else:
+                        filler_plan = build_filler_plan(
+                            condition.filler,
+                            total_samples=split_spec.samples_per_condition,
+                            rng=filler_rng,
+                        )
                     for sample_index, (plan_item, filler_item) in enumerate(
                         zip(assignment_plan, filler_plan, strict=True)
                     ):
@@ -128,20 +160,44 @@ def build_dataset(loaded: LoadedExperiment, *, output_dir: Path | None = None) -
                             filler_distraction=filler_item.distraction,
                         )
                         semantic_seed = derive_seed(spec.dataset.seed, "semantic", source_example_id)
-                        source = generate_periodic_source(
-                            num_variables=num_variables,
-                            num_values=condition.num_values,
-                            min_extra_assignments=plan_item.min_extra_assignments,
-                            max_extra_assignments=plan_item.max_extra_assignments,
-                            query_mode=spec.generation.query_mode,
-                            distinct_initial_values=spec.generation.distinct_initial_values,
-                            require_strict_witness=spec.generation.require_strict_witness,
-                            allow_self_reference=spec.generation.allow_self_reference,
-                            periodic_constant_probability=(spec.generation.periodic_constant_probability),
-                            rng=random.Random(semantic_seed),
-                        )
-                        for complexity in Complexity:
-                            instance = derive_instance(source, complexity=complexity)
+                        for retry_index in range(10_000):
+                            retry_seed = (
+                                semantic_seed
+                                if retry_index == 0
+                                else derive_seed(
+                                    spec.dataset.seed,
+                                    "semantic-retry",
+                                    source_example_id,
+                                    str(retry_index),
+                                )
+                            )
+                            source = generate_periodic_source(
+                                num_variables=num_variables,
+                                num_values=condition.num_values,
+                                min_extra_assignments=plan_item.min_extra_assignments,
+                                max_extra_assignments=plan_item.max_extra_assignments,
+                                query_mode=spec.generation.query_mode,
+                                distinct_initial_values=spec.generation.distinct_initial_values,
+                                require_strict_witness=spec.generation.require_strict_witness,
+                                allow_self_reference=spec.generation.allow_self_reference,
+                                periodic_constant_probability=(spec.generation.periodic_constant_probability),
+                                rng=random.Random(retry_seed),
+                            )
+                            instances = tuple(
+                                derive_instance(source, complexity=complexity)
+                                for complexity in Complexity
+                            )
+                            if not (
+                                {instance.instance_id for instance in instances}
+                                & excluded_semantics
+                            ):
+                                break
+                        else:
+                            raise RuntimeError(
+                                f"could not generate {split_name!r} example disjoint from "
+                                f"{split_spec.disjoint_from!r} after 10000 attempts"
+                            )
+                        for complexity, instance in zip(Complexity, instances, strict=True):
                             example_id = _derived_example_id(source_example_id, complexity)
                             canonical_record = {
                                 "example_id": example_id,
@@ -160,7 +216,10 @@ def build_dataset(loaded: LoadedExperiment, *, output_dir: Path | None = None) -
                             split_semantics[split_name].add(instance.instance_id)
 
                             for formatter in loaded.formatters:
-                                if not condition_uses_formatter(condition, formatter.name):
+                                if not (
+                                    condition_uses_formatter(condition, formatter.name)
+                                    and split_uses_formatter(split_spec, formatter.name)
+                                ):
                                     continue
                                 config_name = hub_config_name(
                                     spec.huggingface.config_naming,

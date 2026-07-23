@@ -11,6 +11,7 @@ from state_bench.scheduling import (
     allocate_bucket_counts,
     build_assignment_plan,
     build_filler_plan,
+    build_stratified_filler_plan,
     log_spaced_buckets,
 )
 
@@ -79,10 +80,16 @@ def test_long_context_experiment_config_loads() -> None:
     loaded = load_experiment(ROOT / "configs/experiments/long-context.yaml")
     assert loaded.spec.dataset.name == "state-tracking-long-context-v1"
     assert loaded.spec.splits["test"].samples_per_condition == 340
-    assert len(loaded.spec.generation.conditions) == 2
-    padded, long = loaded.spec.generation.conditions
+    train = loaded.spec.splits["train"]
+    assert train.samples_per_condition == 1_000_000
+    assert train.formatters == ["integer-code"]
+    assert train.disjoint_from == ["test"]
+    assert len(loaded.spec.generation.conditions) == 4
+    padded, long, training, padded_long = loaded.spec.generation.conditions
+    assert padded.splits == ["test"]
     assert padded.formatters is None
     assert padded.filler.proportions == [0.0, 0.25, 0.5, 0.75, 0.9]
+    assert long.splits == ["test"]
     assert isinstance(long.extra_assignments, LogSpacedAssignmentSchedule)
     assert long.extra_assignments.max == 64_000
     assert long.extra_assignments.sample_decay == 1.0
@@ -91,6 +98,18 @@ def test_long_context_experiment_config_loads() -> None:
     buckets = log_spaced_buckets(long.extra_assignments)
     assert len(buckets) == 17
     assert set(allocate_bucket_counts(long.extra_assignments, total_samples=340).values()) == {20}
+    assert training.splits == ["train"]
+    assert training.formatters == ["integer-code"]
+    assert training.extra_assignments.min == training.extra_assignments.max == 1
+    assert training.filler.proportions == [0.0, 0.25, 0.5, 0.75, 0.9]
+    assert training.filler.distraction_levels == ["easy"]
+    assert padded_long.splits == ["test"]
+    assert padded_long.formatters == ["integer-code"]
+    assert isinstance(padded_long.extra_assignments, LogSpacedAssignmentSchedule)
+    assert padded_long.extra_assignments.max == 64_000
+    assert padded_long.filler.proportions == [0.25]
+    assert padded_long.filler.distraction_levels == ["easy", "medium", "hard"]
+    assert padded_long.filler.stratify_by_assignment_bucket
     token_strata = loaded.spec.huggingface.token_strata
     assert token_strata is not None
     assert loaded.spec.huggingface.staging_workers == 2
@@ -123,3 +142,36 @@ def test_filler_plan_preserves_budget_and_evenly_covers_axis() -> None:
         (0.9, "hard"),
     }
     assert max(counts.values()) - min(counts.values()) <= 1
+
+
+def test_filler_plan_can_cover_every_variant_within_each_assignment_bucket() -> None:
+    assignment_plan = build_assignment_plan(
+        _schedule(max=8, min_samples_per_bucket=6),
+        total_samples=24,
+        rng=random.Random(3),
+    )
+    filler = FillerSpec(
+        proportions=[0.25],
+        distraction_levels=["easy", "medium", "hard"],
+        stratify_by_assignment_bucket=True,
+    )
+    filler_plan = build_stratified_filler_plan(
+        filler,
+        assignment_plan=assignment_plan,
+        rng=random.Random(4),
+    )
+
+    by_bucket: dict[int, Counter[tuple[float, str | None]]] = {}
+    for assignment, padding in zip(assignment_plan, filler_plan, strict=True):
+        assert assignment.target_extra_assignments is not None
+        counts = by_bucket.setdefault(assignment.target_extra_assignments, Counter())
+        counts[(padding.proportion, padding.distraction)] += 1
+
+    assert set(by_bucket) == {1, 2, 4, 8}
+    for counts in by_bucket.values():
+        assert set(counts) == {
+            (0.25, "easy"),
+            (0.25, "medium"),
+            (0.25, "hard"),
+        }
+        assert max(counts.values()) - min(counts.values()) <= 1

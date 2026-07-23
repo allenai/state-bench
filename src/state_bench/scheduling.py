@@ -55,6 +55,26 @@ def build_filler_plan(
     return tuple(plan)
 
 
+def build_stratified_filler_plan(
+    spec: FillerSpec,
+    *,
+    assignment_plan: tuple[AssignmentPlanItem, ...],
+    rng: random.Random,
+) -> tuple[FillerPlanItem, ...]:
+    """Evenly cover filler variants within every assignment-depth bucket."""
+
+    indices_by_bucket: dict[int | None, list[int]] = {}
+    for index, item in enumerate(assignment_plan):
+        indices_by_bucket.setdefault(item.target_extra_assignments, []).append(index)
+
+    result = [FillerPlanItem(0.0, None)] * len(assignment_plan)
+    for indices in indices_by_bucket.values():
+        bucket_plan = build_filler_plan(spec, total_samples=len(indices), rng=rng)
+        for index, filler_item in zip(indices, bucket_plan, strict=True):
+            result[index] = filler_item
+    return tuple(result)
+
+
 def sample_filler_plan_item(spec: FillerSpec, *, rng: random.Random) -> FillerPlanItem:
     proportion, distraction = rng.choice(filler_variants(spec))
     return FillerPlanItem(proportion, distraction)
