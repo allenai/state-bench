@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import hashlib
 import random
 import re
 from pathlib import Path
+from unittest.mock import patch
 
 import pytest
 from pydantic import ValidationError
@@ -25,6 +27,20 @@ def test_default_experiment_loads_and_validates_capacities() -> None:
         "people-in-rooms",
         "ruler",
     ]
+
+
+def test_formatter_config_hash_is_cached_without_reuse_across_model_copies() -> None:
+    formatter = load_formatter(ROOT / "configs/formats/ruler.yaml")
+    with patch("state_bench.config.hashlib.sha256", wraps=hashlib.sha256) as sha256:
+        original_hash = formatter.config_hash
+
+        assert formatter.config_hash == original_hash
+        assert sha256.call_count == 1
+
+        renamed = formatter.model_copy(update={"name": "ruler-copy"})
+        assert renamed.config_hash != original_hash
+        assert renamed.config_hash == renamed.config_hash
+        assert sha256.call_count == 2
 
 
 def test_integer_code_golden_render() -> None:

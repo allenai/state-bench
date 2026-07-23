@@ -34,6 +34,48 @@ class TokenizerLike(Protocol):
     ) -> dict[str, Any]: ...
 
 
+class _GigatokenAdapter:
+    """Use gigatoken for exact lengths while retaining the HF tokenizer API."""
+
+    def __init__(self, tokenizer: Any) -> None:
+        import gigatoken
+
+        self.name_or_path = str(tokenizer.name_or_path)
+        self._fallback = tokenizer
+        self._accelerated = gigatoken.Tokenizer(tokenizer)
+
+    def __call__(
+        self,
+        texts: list[str],
+        *,
+        add_special_tokens: bool,
+        padding: bool,
+        truncation: bool,
+    ) -> dict[str, Any]:
+        return cast(
+            "dict[str, Any]",
+            self._fallback(
+                texts,
+                add_special_tokens=add_special_tokens,
+                padding=padding,
+                truncation=truncation,
+            ),
+        )
+
+    def token_lengths(self, texts: list[str], *, add_special_tokens: bool) -> list[int]:
+        if add_special_tokens:
+            encodings = self._fallback.backend_tokenizer.encode_batch(
+                texts,
+                add_special_tokens=True,
+            )
+            return [len(encoding) for encoding in encodings]
+
+        import awkward as ak
+
+        encoded = self._accelerated.encode_batch(texts)
+        return [int(length) for length in ak.to_list(ak.num(encoded, axis=1))]
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description="Summarize rendered dataset fields and tokenizer-dependent lengths."
@@ -145,9 +187,9 @@ def analyze_records(
             prefix + joiner + completion
             for prefix, completion in zip(prefixes, completions, strict=True)
         ]
-        prefix_lengths = _token_lengths(tokenizer, prefixes, add_special_tokens)
-        completion_lengths = _token_lengths(tokenizer, completions, add_special_tokens)
-        combined_lengths = _token_lengths(tokenizer, combined, add_special_tokens)
+        prefix_lengths = token_lengths(tokenizer, prefixes, add_special_tokens)
+        completion_lengths = token_lengths(tokenizer, completions, add_special_tokens)
+        combined_lengths = token_lengths(tokenizer, combined, add_special_tokens)
 
         choices: list[str] = []
         choice_owners: list[int] = []
@@ -155,9 +197,9 @@ def analyze_records(
             for choice in record.get("choices", []):
                 choices.append(str(choice))
                 choice_owners.append(row_index)
-        choice_lengths = _token_lengths(tokenizer, choices, add_special_tokens) if choices else []
+        choice_lengths = token_lengths(tokenizer, choices, add_special_tokens) if choices else []
         prompt_choice_lengths = (
-            _token_lengths(
+            token_lengths(
                 tokenizer,
                 [
                     prefixes[owner] + joiner + choice
@@ -284,7 +326,10 @@ def load_tokenizer(name_or_path: str, *, revision: str | None = None) -> Tokeniz
     tokenizer = AutoTokenizer.from_pretrained(name_or_path, revision=revision, use_fast=True)
     if tokenizer is None:
         raise RuntimeError(f"failed to load tokenizer: {name_or_path}")
-    return cast("TokenizerLike", tokenizer)
+    try:
+        return _GigatokenAdapter(tokenizer)
+    except (ImportError, NotImplementedError, ValueError):
+        return cast("TokenizerLike", tokenizer)
 
 
 def format_report(report: dict[str, Any]) -> str:
@@ -311,13 +356,23 @@ def format_report(report: dict[str, Any]) -> str:
     return "\n".join(lines)
 
 
-def _token_lengths(
+def token_lengths(
     tokenizer: TokenizerLike,
     texts: list[str],
     add_special_tokens: bool,
 ) -> list[int]:
     if not texts:
         return []
+    accelerated = getattr(tokenizer, "token_lengths", None)
+    if callable(accelerated):
+        return cast(
+            "list[int]",
+            accelerated(texts, add_special_tokens=add_special_tokens),
+        )
+    backend = getattr(tokenizer, "backend_tokenizer", None)
+    if backend is not None:
+        encodings = backend.encode_batch(texts, add_special_tokens=add_special_tokens)
+        return [len(encoding) for encoding in encodings]
     encoded = tokenizer(
         texts,
         add_special_tokens=add_special_tokens,
@@ -325,8 +380,6 @@ def _token_lengths(
         truncation=False,
     )
     return [len(token_ids) for token_ids in encoded["input_ids"]]
-
-
 def _validate_rendered_batch(batch: list[dict[str, Any]], group_by: tuple[str, ...]) -> None:
     for index, record in enumerate(batch):
         missing = {"prefix", "completion"} - record.keys()

@@ -13,6 +13,8 @@ from pydantic import BaseModel, ConfigDict, Field, PositiveInt, model_validator
 
 from state_bench.model import Complexity, QueryMode
 
+_FORMATTER_CONFIG_HASH_CACHE: dict[int, tuple[object, str]] = {}
+
 
 class StrictModel(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
@@ -395,8 +397,13 @@ class FormatterSpec(StrictModel):
 
     @property
     def config_hash(self) -> str:
+        cached = _FORMATTER_CONFIG_HASH_CACHE.get(id(self))
+        if cached is not None and cached[0] is self:
+            return cached[1]
         content = json.dumps(self.model_dump(mode="json"), sort_keys=True, separators=(",", ":"))
-        return hashlib.sha256(content.encode()).hexdigest()[:20]
+        digest = hashlib.sha256(content.encode()).hexdigest()[:20]
+        _FORMATTER_CONFIG_HASH_CACHE[id(self)] = (self, digest)
+        return digest
 
 
 class LoadedExperiment:

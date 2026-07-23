@@ -17,6 +17,7 @@ from state_bench.stats import (
     TokenizerLike,
     iter_rendered_records,
     load_tokenizer,
+    token_lengths,
 )
 
 TextField = Literal["prefix", "completion", "prefix+completion"]
@@ -113,13 +114,7 @@ def analyze_token_lengths(
             if missing:
                 raise ValueError(f"record {index} is missing fields: {sorted(missing)}")
         texts = [_record_text(record, field=field, joiner=joiner) for record in batch]
-        encoded = tokenizer(
-            texts,
-            add_special_tokens=add_special_tokens,
-            padding=False,
-            truncation=False,
-        )
-        lengths = [len(token_ids) for token_ids in encoded["input_ids"]]
+        lengths = token_lengths(tokenizer, texts, add_special_tokens)
         all_lengths.extend(lengths)
         for record, length in zip(batch, lengths, strict=True):
             key = tuple(str(record[name]) for name in group_by)

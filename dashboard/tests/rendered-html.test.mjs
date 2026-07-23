@@ -45,7 +45,7 @@ test("bundles complete deterministic inspection conditions", async () => {
     await readFile(new URL("../public/samples.json", import.meta.url), "utf8"),
   );
   assert.equal(payload.samplesPerCondition, 2);
-  assert.equal(payload.samples.length, 360);
+  assert.equal(payload.samples.length, 468);
   assert.deepEqual(
     [...new Set(payload.samples.map((sample) => sample.complexity))].sort(),
     ["aperiodic", "periodic", "r-trivial"],
@@ -57,7 +57,7 @@ test("bundles complete deterministic inspection conditions", async () => {
           `${sample.formatter}/${sample.complexity}/${sample.paddingComplexity}/${sample.paddingPercent}`,
       ),
     ).size,
-    180,
+    234,
   );
   assert.ok(payload.samples.every((sample) => sample.metadata));
   assert.ok(payload.samples.some((sample) => sample.formatter === "ruler"));

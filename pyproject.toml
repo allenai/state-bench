@@ -17,6 +17,7 @@ hub = [
     "pyarrow>=20.0",
 ]
 analysis = [
+    "gigatoken>=0.9.0",
     "pyarrow>=20.0",
     "transformers>=4.57",
 ]

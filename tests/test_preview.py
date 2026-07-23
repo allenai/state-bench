@@ -98,10 +98,10 @@ def test_long_context_preview_exposes_padded_r_trivial_in_every_formatter() -> N
         config_name="cube-painting--r-trivial",
         seed=7,
         num_variables=2,
-        filler_proportion=0.99,
+        filler_proportion=0.9,
         filler_distraction="medium",
     )
-    assert preview.rendered.filler_proportion == 0.99
+    assert preview.rendered.filler_proportion == 0.9
     assert preview.rendered.filler_distraction == "medium"
-    assert preview.rendered.num_filler_lines == 495
+    assert preview.rendered.num_filler_lines == 45
     assert "Unrelated catalog note" in preview.rendered.prefix

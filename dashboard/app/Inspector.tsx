@@ -33,7 +33,7 @@ type SamplePack = {
 };
 
 const COMPLEXITIES: Complexity[] = ["periodic", "aperiodic", "r-trivial"];
-const PADDING_PERCENTAGES = [0, 25, 50, 75];
+const PADDING_PERCENTAGES = [0, 25, 50, 75, 90];
 const PADDING_STYLES: PaddingComplexity[] = ["easy", "medium", "hard"];
 
 const COMPLEXITY_LABELS: Record<Complexity, string> = {

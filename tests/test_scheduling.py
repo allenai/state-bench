@@ -78,24 +78,25 @@ def test_too_small_sample_budget_is_rejected() -> None:
 def test_long_context_experiment_config_loads() -> None:
     loaded = load_experiment(ROOT / "configs/experiments/long-context.yaml")
     assert loaded.spec.dataset.name == "state-tracking-long-context-v1"
-    assert loaded.spec.splits["test"].samples_per_condition == 380
+    assert loaded.spec.splits["test"].samples_per_condition == 340
     assert len(loaded.spec.generation.conditions) == 2
     padded, long = loaded.spec.generation.conditions
     assert padded.formatters is None
-    assert max(padded.filler.proportions) == 0.99995
+    assert padded.filler.proportions == [0.0, 0.25, 0.5, 0.75, 0.9]
     assert isinstance(long.extra_assignments, LogSpacedAssignmentSchedule)
-    assert long.extra_assignments.max == 192_000
+    assert long.extra_assignments.max == 64_000
     assert long.extra_assignments.sample_decay == 1.0
     assert long.extra_assignments.jitter_fraction == 0.0
     assert long.extra_assignments.min_samples_per_bucket == 20
+    buckets = log_spaced_buckets(long.extra_assignments)
+    assert len(buckets) == 17
+    assert set(allocate_bucket_counts(long.extra_assignments, total_samples=340).values()) == {20}
     token_strata = loaded.spec.huggingface.token_strata
     assert token_strata is not None
     assert loaded.spec.huggingface.staging_workers == 2
-    assert token_strata.mode == "sampled"
-    assert token_strata.batch_size == 4
+    assert token_strata.mode == "exact"
+    assert token_strata.batch_size == 64
     assert token_strata.max_batch_characters == 16_000_000
-    assert token_strata.calibration_scan_rows == 128
-    assert token_strata.calibration_samples_per_group == 16
     assert loaded.spec.output.target_shard_bytes == 128_000_000
     assert [item.max_tokens for item in token_strata.ranges] == [
         100_000,

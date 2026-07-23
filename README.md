@@ -132,11 +132,13 @@ counts rather than putting every row at the exact bucket center. Set
 `sample_decay: 1.0` for uniform sampling across the log-spaced target buckets.
 
 The provided long-context experiment separates a short padded source condition
-from an unpadded assignment-length sweep. The latter uses 380 source samples,
-uniform weights across 19 assignment buckets up to 192,000 assignments, and
+from an unpadded assignment-length sweep. The latter uses 340 source samples,
+uniform weights across 17 assignment buckets up to 64,000 assignments, and
 exactly 20 sources at every target assignment length. Both conditions emit all
-three complexity classes and every configured formatting. Hub Parquet shards
-are capped at 50 long rows apiece.
+three complexity classes and every configured formatting. The assignment and
+padding caps keep the most token-dense RULER prompts below roughly one million
+tokens; padding conditions cover 0%, 25%, 50%, 75%, and 90% of final prompt
+lines. Hub Parquet shards are capped at 50 long rows apiece.
 
 Rows include `source_example_id` and `source_instance_id` so every derived
 triplet can be joined directly. They also include `num_extra_assignments` and
@@ -159,14 +161,12 @@ uv run state-bench config check configs/experiments/long-context.yaml
 uv run state-bench build configs/experiments/long-context.yaml
 ```
 
-The preset also configures sampled tokenizer-length strata for Hub staging:
+The preset also configures exact tokenizer-length strata for Hub staging:
 `[0, 100k)`, `[100k, 500k)`, `[500k, 1m)`, and `[1m, infinity)`. Token counts
-are estimated from formatter-specific character/token calibration examples
-using the OLMo 3 tokenizer over each rendered prompt prefix. Only 16
-length-quantile rows per filler style are tokenized; the remaining rows use a
-piecewise-linear character-to-token estimate. Stage this preset with both
-optional dependency groups because calibration requires the tokenizer as well
-as Parquet support:
+are measured for every rendered prompt prefix with the OLMo 3 tokenizer.
+Gigatoken accelerates the exact tokenization path while preserving Hugging
+Face tokenizer outputs. Stage this preset with both optional dependency groups
+because exact tokenization requires the tokenizer as well as Parquet support:
 
 ```bash
 uv run --extra hub --extra analysis state-bench hub stage \
@@ -176,12 +176,13 @@ uv run --extra hub --extra analysis state-bench hub stage \
 With this config, the source `data/state-tracking-long-context-v1` directory is
 staged to `build/state-tracking-long-context-v1` by default.
 
-Rendered configs then expose independently loadable splits such as
+Rendered configs then expose independently loadable, nonempty splits such as
 `test__tokens_0_100k`, `test__tokens_100k_500k`, `test__tokens_500k_1m`, and
 `test__tokens_1m_plus`. Every staged row includes `token_length` and
-`token_stratum`, with `token_length_is_estimate: true`; the canonical config
-retains the base `test` split. Set `token_strata.mode: exact` when exact
-per-row tokenization is worth the additional staging time.
+`token_stratum`, with `token_length_is_estimate: false`; the canonical config
+retains the base `test` split. Empty ranges are omitted per rendered config;
+consumers should discover available split names instead of assuming that every
+formatter reaches every token range.
 
 ### No-op filler lines
 

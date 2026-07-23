@@ -17,7 +17,7 @@ from tqdm.auto import tqdm
 
 from state_bench.config import LoadedExperiment, TokenStratificationSpec, TokenStratumSpec
 from state_bench.io import sha256_file
-from state_bench.stats import TokenizerLike, load_tokenizer
+from state_bench.stats import TokenizerLike, load_tokenizer, token_lengths
 
 
 def stage_hub_repository(
@@ -36,6 +36,9 @@ def stage_hub_repository(
     data_dir.mkdir()
 
     source_manifest = json.loads((source_dir / "manifest.json").read_text(encoding="utf-8"))
+    # Hub-only settings can change without regenerating rendered JSONL. Record
+    # the settings used for this staging run rather than the source build's copy.
+    source_manifest["huggingface"] = loaded.spec.huggingface.model_dump(mode="json")
     include_canonical = loaded.spec.huggingface.include_canonical_config
     total_rows = sum(
         int(count)
@@ -587,17 +590,7 @@ def _token_lengths(
     texts: list[str],
     spec: TokenStratificationSpec,
 ) -> list[int]:
-    backend = getattr(tokenizer, "backend_tokenizer", None)
-    if backend is not None:
-        encodings = backend.encode_batch(texts, add_special_tokens=spec.add_special_tokens)
-        return [len(encoding) for encoding in encodings]
-    encoded = tokenizer(
-        texts,
-        add_special_tokens=spec.add_special_tokens,
-        padding=False,
-        truncation=False,
-    )
-    return [len(token_ids) for token_ids in encoded["input_ids"]]
+    return token_lengths(tokenizer, texts, spec.add_special_tokens)
 
 
 def _token_stratum(token_length: int, spec: TokenStratificationSpec) -> TokenStratumSpec:
@@ -681,7 +674,9 @@ Rendered configs are partitioned into tokenizer-length splits named
 half-open strata are {interval_text}. Each row records its `token_length`
 and `token_stratum`; token lengths are {length_method}. The
 `token_length_is_estimate` field distinguishes sampled estimates from exact
-measurements. The canonical config retains the unstratified base splits.
+measurements. Empty tokenizer ranges are omitted, so consumers should discover
+the available split names for each rendered config. The canonical config
+retains the unstratified base splits.
 """
     return f"""---
 {frontmatter}

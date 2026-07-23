@@ -27,6 +27,9 @@ PADDING_VARIANTS: tuple[tuple[float, FillerDistraction | None], ...] = (
     (0.75, "easy"),
     (0.75, "medium"),
     (0.75, "hard"),
+    (0.9, "easy"),
+    (0.9, "medium"),
+    (0.9, "hard"),
 )
 NUM_DISTRACTORS = 4
 

@@ -25,6 +25,15 @@ class WhitespaceTokenizer:
         return {"input_ids": [[0] * (len(text.split()) + extra) for text in texts]}
 
 
+class DirectLengthTokenizer(WhitespaceTokenizer):
+    def __call__(self, *args: object, **kwargs: object) -> dict[str, Any]:
+        raise AssertionError("the generic tokenizer path should not be used")
+
+    def token_lengths(self, texts: list[str], *, add_special_tokens: bool) -> list[int]:
+        extra = 2 if add_special_tokens else 0
+        return [len(text) + extra for text in texts]
+
+
 def _records() -> list[dict[str, Any]]:
     return [
         {
@@ -75,6 +84,11 @@ def test_special_tokens_are_counted_when_requested() -> None:
     )
     assert report["token_distributions"]["prefix_tokens"]["min"] == 4
     assert report["token_distributions"]["completion_tokens"]["min"] == 3
+
+
+def test_direct_token_length_backend_avoids_materializing_token_ids() -> None:
+    report = analyze_records(_records()[:1], tokenizer=DirectLengthTokenizer())
+    assert report["token_distributions"]["prefix_tokens"]["min"] == len("one two")
 
 
 def test_jsonl_reader_skips_canonical_rows_and_honors_limit(tmp_path: Path) -> None:

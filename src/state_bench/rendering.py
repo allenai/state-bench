@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import random
 from dataclasses import dataclass
+from functools import cache
 from string import Template
 from typing import Any
 
@@ -254,26 +255,39 @@ def _render_program_with_filler(
         if formatter.filler_corpus is not None
         else [""] * num_filler_lines
     )
-    filler_lines = [
-        _substitute(
-            _choose(template_value, rng),
-            allowed={
-                "variable",
-                "value",
-                "filler_index",
-                "filler_dots",
-                "filler_text",
-                *metadata,
-            },
-            variable=rng.choice(surface_variables),
-            value=rng.choice(surface_values),
-            filler_index=str(index + 1),
-            filler_dots="." * filler_width,
-            filler_text=corpus_lines[index],
-            **metadata,
-        )
-        for index in range(num_filler_lines)
-    ]
+    if (
+        isinstance(template_value, str)
+        and template_value == "$filler_text"
+        and formatter.filler_corpus is not None
+    ):
+        filler_lines = corpus_lines
+    elif (
+        isinstance(template_value, str)
+        and set(Template(template_value).get_identifiers()) == {"filler_dots"}
+    ):
+        filler_line = Template(template_value).substitute(filler_dots="." * filler_width)
+        filler_lines = [filler_line] * num_filler_lines
+    else:
+        filler_lines = [
+            _substitute(
+                _choose(template_value, rng),
+                allowed={
+                    "variable",
+                    "value",
+                    "filler_index",
+                    "filler_dots",
+                    "filler_text",
+                    *metadata,
+                },
+                variable=rng.choice(surface_variables),
+                value=rng.choice(surface_values),
+                filler_index=str(index + 1),
+                filler_dots="." * filler_width,
+                filler_text=corpus_lines[index],
+                **metadata,
+            )
+            for index in range(num_filler_lines)
+        ]
     total_lines = len(instructions) + num_filler_lines
     instruction_positions = set(rng.sample(range(total_lines), len(instructions)))
     instruction_iterator = iter(instructions)
@@ -291,7 +305,7 @@ def _corpus_filler_lines(
     target_width: int,
     rng: random.Random,
 ) -> list[str]:
-    words = corpus.split()
+    words = _corpus_words(corpus)
     if not words:
         raise ValueError("filler corpus must contain at least one word")
 
@@ -310,6 +324,11 @@ def _corpus_filler_lines(
             word_index = (word_index + 1) % len(words)
         lines.append(" ".join(line_words))
     return lines
+
+
+@cache
+def _corpus_words(corpus: str) -> tuple[str, ...]:
+    return tuple(corpus.split())
 
 
 def _natural_list(values: list[str]) -> str:

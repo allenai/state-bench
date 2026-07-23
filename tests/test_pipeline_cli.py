@@ -449,16 +449,22 @@ def test_parquet_writer_flushes_at_estimated_byte_target(tmp_path: Path) -> None
     ]
 
 
+@pytest.mark.parametrize(
+    ("mode", "is_estimate"),
+    [("sampled", True), ("exact", False)],
+)
 def test_hub_stage_publishes_rendered_token_strata_as_splits(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
+    mode: str,
+    is_estimate: bool,
 ) -> None:
     parquet = pytest.importorskip("pyarrow.parquet")
     experiment = _small_experiment(tmp_path)
     source = yaml.safe_load(experiment.read_text(encoding="utf-8"))
     source["huggingface"]["token_strata"] = {
         "tokenizer": "fake",
-        "mode": "sampled",
+        "mode": mode,
         "calibration_scan_rows": 2,
         "calibration_samples_per_group": 2,
         "ranges": [
@@ -479,7 +485,7 @@ def test_hub_stage_publishes_rendered_token_strata_as_splits(
     repo_dir = stage_hub_repository(
         loaded,
         source_dir=output,
-        repo_dir=tmp_path / "stratified-hub",
+        repo_dir=tmp_path / f"{mode}-stratified-hub",
     )
     report = validate_hub_repository(repo_dir)
     assert report["counts"]["integer-code--periodic/train__short"] == 1
@@ -488,7 +494,7 @@ def test_hub_stage_publishes_rendered_token_strata_as_splits(
         repo_dir / "data/integer-code--periodic/train__long-00000-of-00001.parquet"
     ).to_pylist()[0]
     assert row["token_length"] == 5
-    assert row["token_length_is_estimate"] is True
+    assert row["token_length_is_estimate"] is is_estimate
     assert row["token_stratum"] == "long"
 
 

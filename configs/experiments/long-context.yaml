@@ -10,10 +10,10 @@ splits:
     # This is a fixed budget for each complexity/variable-count pair. It is
     # distributed across the log-spaced buckets below rather than repeated at
     # every depth. Uniform log-bucket weights provide comparable coverage from
-    # short traces through the roughly one-million-token tail. With 19 target
-    # assignment buckets, 380 periodic source rows gives exactly 20 samples per
+    # short traces through the roughly one-million-token tail. With 17 target
+    # assignment buckets, 340 periodic source rows gives exactly 20 samples per
     # target. Every source row produces periodic, aperiodic, and r-trivial rows.
-    samples_per_condition: 380
+    samples_per_condition: 340
 
 generation:
   query_mode: all
@@ -33,7 +33,8 @@ generation:
       # The fixed condition budget is spread across the zero-padding baseline
       # and every nonzero proportion/distraction combination.
       filler:
-        proportions: [0.0, 0.9, 0.99, 0.999, 0.99995]
+        # Proportions are the share of final prompt lines occupied by padding.
+        proportions: [0.0, 0.25, 0.5, 0.75, 0.9]
         distraction_levels: [easy, medium, hard]
     # Sequence-length sweeps stay unpadded so the largest traces remain
     # tractable; these rows are likewise emitted in all three classes.
@@ -43,7 +44,9 @@ generation:
       extra_assignments:
         distribution: log-spaced
         min: 1
-        max: 192000
+        # RULER is the most token-dense formatter at about 15.2 tokens per
+        # assignment; 64k assignments therefore stays just below 1m tokens.
+        max: 64000
         growth_factor: 2.0
         sample_decay: 1.0
         jitter_fraction: 0.0
@@ -78,14 +81,13 @@ huggingface:
   # as independently loadable splits; bounds are half-open [min, max).
   token_strata:
     tokenizer: allenai/Olmo-3-1025-7B
-    mode: sampled
+    # Gigatoken makes exact per-row OLMo-3 lengths practical during staging.
+    mode: exact
     field: prefix
-    # Short prompts can use tokenizer parallelism, while the character budget
-    # prevents several million-token prompts from occupying one batch.
-    batch_size: 4
+    # Short prompts use larger batches, while the character budget keeps
+    # near-million-token prompts from occupying the same batch.
+    batch_size: 64
     max_batch_characters: 16000000
-    calibration_scan_rows: 128
-    calibration_samples_per_group: 16
     ranges:
       - {name: tokens_0_100k, min_tokens: 0, max_tokens: 100000}
       - {name: tokens_100k_500k, min_tokens: 100000, max_tokens: 500000}
