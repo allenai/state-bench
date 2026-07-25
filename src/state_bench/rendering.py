@@ -74,6 +74,7 @@ def render_instance(
     shuffle_choices: bool = True,
     filler_proportion: float = 0.0,
     filler_distraction: FillerDistraction | None = None,
+    include_diagnostics: bool = True,
 ) -> RenderedExample:
     """Render an instance without recomputing or changing its semantics."""
 
@@ -159,29 +160,34 @@ def render_instance(
         surface_variables=surface_variables,
         surface_values=surface_values,
     )
-    incorrect_completions = tuple(
-        _render_completion(
-            instance=instance,
-            state=state,
-            formatter=formatter,
-            assertion_template=assertion_template,
-            metadata=metadata,
-            surface_variables=surface_variables,
-            surface_values=surface_values,
+    if include_diagnostics:
+        incorrect_completions = tuple(
+            _render_completion(
+                instance=instance,
+                state=state,
+                formatter=formatter,
+                assertion_template=assertion_template,
+                metadata=metadata,
+                surface_variables=surface_variables,
+                surface_values=surface_values,
+            )
+            for state in incorrect_states
         )
-        for state in incorrect_states
-    )
-    choices = [completion, *incorrect_completions]
-    if shuffle_choices:
-        rng.shuffle(choices)
-    correct_choice_index = choices.index(completion)
+        choices = [completion, *incorrect_completions]
+        if shuffle_choices:
+            rng.shuffle(choices)
+        correct_choice_index = choices.index(completion)
+    else:
+        incorrect_completions = ()
+        choices = []
+        correct_choice_index = 0
     if formatter.layout.trailing_newline:
         prefix += "\n"
         completion += "\n"
         incorrect_completions = tuple(value + "\n" for value in incorrect_completions)
         choices = [value + "\n" for value in choices]
 
-    dependencies = dependency_summary(instance)
+    dependencies = dependency_summary(instance) if include_diagnostics else None
     return RenderedExample(
         instance_id=instance.instance_id,
         formatter=formatter.name,
@@ -205,10 +211,10 @@ def render_instance(
         ),
         filler_distraction=filler_distraction,
         num_filler_lines=num_filler_lines,
-        final_dependency_lengths=dependencies.final_dependency_lengths,
-        max_dependency_length=dependencies.max_dependency_length,
-        mean_dependency_length=dependencies.mean_dependency_length,
-        modal_dependency_length=dependencies.modal_dependency_length,
+        final_dependency_lengths=(dependencies.final_dependency_lengths if dependencies else ()),
+        max_dependency_length=(dependencies.max_dependency_length if dependencies else 0),
+        mean_dependency_length=(dependencies.mean_dependency_length if dependencies else 0.0),
+        modal_dependency_length=(dependencies.modal_dependency_length if dependencies else 0),
     )
 
 

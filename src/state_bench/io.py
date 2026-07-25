@@ -59,9 +59,20 @@ class _GenerationTask:
     filler_item: FillerPlanItem
 
 
+@dataclass(frozen=True, slots=True)
+class _GeneratedSample:
+    """Compact worker result; large shared task context is not returned over IPC."""
+
+    source_example_id: str
+    plan_item: AssignmentPlanItem
+    filler_item: FillerPlanItem
+    source: StateTrackingInstance
+    instances: tuple[StateTrackingInstance, ...]
+
+
 def _generate_instances(
     task: _GenerationTask,
-) -> tuple[_GenerationTask, StateTrackingInstance, tuple[StateTrackingInstance, ...]]:
+) -> _GeneratedSample:
     """Generate a source and its derived variants in an isolated worker."""
 
     semantic_seed = derive_seed(task.root_seed, "semantic", task.source_example_id)
@@ -85,7 +96,13 @@ def _generate_instances(
         )
         instances = tuple(derive_instance(source, complexity=complexity) for complexity in Complexity)
         if not ({instance.instance_id for instance in instances} & task.excluded_semantics):
-            return task, source, instances
+            return _GeneratedSample(
+                source_example_id=task.source_example_id,
+                plan_item=task.plan_item,
+                filler_item=task.filler_item,
+                source=source,
+                instances=instances,
+            )
     raise RuntimeError(f"could not generate source {task.source_example_id!r} after 10000 attempts")
 
 
@@ -99,7 +116,7 @@ def build_dataset(
 
     spec = loaded.spec
     auto_workers = workers is None
-    workers = max(1, (os.cpu_count() or 1) - 1) if auto_workers else workers
+    workers = max(1, (os.process_cpu_count() or 1) - 1) if auto_workers else workers
     if workers < 1:
         raise ValueError("workers must be positive")
     root = output_dir or _resolve_relative(loaded.path.parent, spec.dataset.output_dir)
@@ -250,6 +267,7 @@ def build_dataset(
                             rng=filler_rng,
                         )
                     planned_samples = enumerate(zip(assignment_plan, filler_plan, strict=True))
+                    frozen_excluded_semantics = frozenset(excluded_semantics)
                     tasks = (
                         _GenerationTask(
                             source_example_id=_example_id(
@@ -274,21 +292,28 @@ def build_dataset(
                             allow_self_reference=spec.generation.allow_self_reference,
                             periodic_constant_probability=spec.generation.periodic_constant_probability,
                             root_seed=spec.dataset.seed,
-                            excluded_semantics=frozenset(excluded_semantics),
+                            excluded_semantics=frozen_excluded_semantics,
                             plan_item=plan_item,
                             filler_item=filler_item,
                         )
                         for sample_index, (plan_item, filler_item) in planned_samples
                     )
                     generated_samples = (
-                        executor.map(_generate_instances, tasks, chunksize=64)
+                        executor.map(
+                            _generate_instances,
+                            tasks,
+                            chunksize=256,
+                            buffersize=max(1, workers * 4),
+                        )
                         if executor is not None
                         else map(_generate_instances, tasks)
                     )
-                    for task, source, instances in generated_samples:
-                        source_example_id = task.source_example_id
-                        plan_item = task.plan_item
-                        filler_item = task.filler_item
+                    for generated in generated_samples:
+                        source_example_id = generated.source_example_id
+                        plan_item = generated.plan_item
+                        filler_item = generated.filler_item
+                        source = generated.source
+                        instances = generated.instances
                         for complexity, instance in zip(Complexity, instances, strict=True):
                             example_id = _derived_example_id(source_example_id, complexity)
                             needs_canonical_record = (
@@ -329,12 +354,17 @@ def build_dataset(
                                 if include_trace
                                 else None
                             )
-                            incorrect_states = generate_incorrect_states(
-                                instance,
-                                num_distractors=spec.output.multiple_choice.num_distractors,
-                                rng=random.Random(
-                                    derive_seed(spec.dataset.seed, "distractors", example_id)
-                                ),
+                            minimal_output = split_name in spec.output.minimal_splits
+                            incorrect_states = (
+                                ()
+                                if minimal_output
+                                else generate_incorrect_states(
+                                    instance,
+                                    num_distractors=spec.output.multiple_choice.num_distractors,
+                                    rng=random.Random(
+                                        derive_seed(spec.dataset.seed, "distractors", example_id)
+                                    ),
+                                )
                             )
 
                             for formatter in loaded.formatters:
@@ -362,8 +392,10 @@ def build_dataset(
                                     shuffle_choices=spec.output.multiple_choice.shuffle_choices,
                                     filler_proportion=filler_item.proportion,
                                     filler_distraction=filler_item.distraction,
+                                    include_diagnostics=not minimal_output,
                                 )
-                                if split_name in spec.output.minimal_splits:
+                                rendered_record: dict[str, Any]
+                                if minimal_output:
                                     rendered_record = {
                                         "example_id": example_id,
                                         "source_example_id": source_example_id,
@@ -393,6 +425,7 @@ def build_dataset(
                                     split_name not in spec.output.minimal_splits
                                     and spec.output.include_final_state
                                 ):
+                                    assert canonical_record is not None
                                     rendered_record["final_state"] = canonical_record["final_state"]
                                 write_json_line(
                                     rendered_handles[(config_name, split_name)], rendered_record

@@ -186,16 +186,23 @@ def test_parallel_generation_preserves_rendered_bytes(tmp_path: Path) -> None:
 
 def test_build_defaults_to_cpus_minus_one(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     experiment = _small_experiment(tmp_path)
-    monkeypatch.setattr("state_bench.io.os.cpu_count", lambda: 5)
+    monkeypatch.setattr("state_bench.io.os.process_cpu_count", lambda: 5)
     created_workers: list[int] = []
 
     class RecordingExecutor:
         def __init__(self, *, max_workers: int) -> None:
             created_workers.append(max_workers)
 
-        def map(self, function: object, items: object, *, chunksize: int) -> object:
-            del chunksize
-            return map(function, items)  # type: ignore[arg-type]
+        def map(
+            self,
+            function: object,
+            items: object,
+            *,
+            chunksize: int,
+            buffersize: int,
+        ) -> object:
+            del chunksize, buffersize
+            return map(function, items)  # ty: ignore[invalid-argument-type]
 
         def shutdown(self) -> None:
             pass
@@ -203,6 +210,39 @@ def test_build_defaults_to_cpus_minus_one(monkeypatch: pytest.MonkeyPatch, tmp_p
     monkeypatch.setattr("state_bench.io.ProcessPoolExecutor", RecordingExecutor)
     build_dataset(load_experiment(experiment))
     assert created_workers == [4]
+
+
+def test_minimal_split_skips_distractors_and_dependency_diagnostics(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    experiment = _small_experiment(tmp_path)
+    source = yaml.safe_load(experiment.read_text(encoding="utf-8"))
+    source["splits"] = {"train": {"samples_per_condition": 2}}
+    source["output"]["minimal_splits"] = ["train"]
+    source["output"]["omit_canonical_splits"] = ["train"]
+    experiment.write_text(yaml.safe_dump(source, sort_keys=False), encoding="utf-8")
+
+    def fail(*args: object, **kwargs: object) -> None:
+        del args, kwargs
+        raise AssertionError("minimal rendering should skip diagnostics")
+
+    monkeypatch.setattr("state_bench.io.generate_incorrect_states", fail)
+    monkeypatch.setattr("state_bench.rendering.dependency_summary", fail)
+    output = build_dataset(load_experiment(experiment), workers=1)
+    rows = read_jsonl(output / "rendered/integer-code--periodic/train.jsonl")
+    assert rows
+    assert set(rows[0]) == {
+        "example_id",
+        "source_example_id",
+        "source_instance_id",
+        "instance_id",
+        "formatter",
+        "complexity",
+        "prefix",
+        "completion",
+    }
+    assert not (output / "canonical/train.jsonl").exists()
 
 
 def test_split_scoping_and_disjoint_generation_preserve_existing_test_bytes(
