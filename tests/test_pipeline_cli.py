@@ -165,6 +165,25 @@ def test_build_preserves_ids_across_formatters(tmp_path: Path) -> None:
     assert json.loads((output / "manifest.json").read_text())["counts"]["canonical/train"] == 6
 
 
+def test_parallel_generation_preserves_rendered_bytes(tmp_path: Path) -> None:
+    experiment = _small_experiment(tmp_path)
+    loaded = load_experiment(experiment)
+    serial = build_dataset(loaded, output_dir=tmp_path / "serial", workers=1)
+    try:
+        parallel = build_dataset(loaded, output_dir=tmp_path / "parallel", workers=2)
+    except PermissionError as error:
+        pytest.skip(f"process pools are unavailable in this sandbox: {error}")
+    serial_files = {
+        str(path.relative_to(serial)): path.read_bytes()
+        for path in serial.rglob("*.jsonl")
+    }
+    parallel_files = {
+        str(path.relative_to(parallel)): path.read_bytes()
+        for path in parallel.rglob("*.jsonl")
+    }
+    assert parallel_files == serial_files
+
+
 def test_split_scoping_and_disjoint_generation_preserve_existing_test_bytes(
     tmp_path: Path,
 ) -> None:

@@ -7,6 +7,8 @@ import json
 import random
 from collections import Counter, defaultdict
 from collections.abc import Mapping
+from concurrent.futures import ProcessPoolExecutor
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from itertools import repeat
 from pathlib import Path
@@ -23,10 +25,11 @@ from state_bench.config import (
 )
 from state_bench.distractors import generate_incorrect_states
 from state_bench.generation import derive_instance, generate_periodic_source
-from state_bench.model import Complexity
+from state_bench.model import Complexity, QueryMode, StateTrackingInstance
 from state_bench.rendering import render_instance
 from state_bench.scheduling import (
     AssignmentPlanItem,
+    FillerPlanItem,
     build_assignment_plan,
     build_filler_plan,
     build_stratified_filler_plan,
@@ -35,10 +38,67 @@ from state_bench.scheduling import (
 from state_bench.semantics import dependency_summary
 
 
-def build_dataset(loaded: LoadedExperiment, *, output_dir: Path | None = None) -> Path:
+@dataclass(frozen=True, slots=True)
+class _GenerationTask:
+    """All information needed to generate one deterministic source triplet."""
+
+    source_example_id: str
+    num_variables: int
+    num_values: int
+    min_extra_assignments: int
+    max_extra_assignments: int
+    query_mode: QueryMode
+    distinct_initial_values: bool
+    require_strict_witness: bool
+    allow_self_reference: bool
+    periodic_constant_probability: float
+    root_seed: int
+    excluded_semantics: frozenset[str]
+    plan_item: AssignmentPlanItem
+    filler_item: FillerPlanItem
+
+
+def _generate_instances(
+    task: _GenerationTask,
+) -> tuple[_GenerationTask, StateTrackingInstance, tuple[StateTrackingInstance, ...]]:
+    """Generate a source and its derived variants in an isolated worker."""
+
+    semantic_seed = derive_seed(task.root_seed, "semantic", task.source_example_id)
+    for retry_index in range(10_000):
+        retry_seed = (
+            semantic_seed
+            if retry_index == 0
+            else derive_seed(task.root_seed, "semantic-retry", task.source_example_id, str(retry_index))
+        )
+        source = generate_periodic_source(
+            num_variables=task.num_variables,
+            num_values=task.num_values,
+            min_extra_assignments=task.min_extra_assignments,
+            max_extra_assignments=task.max_extra_assignments,
+            query_mode=task.query_mode,
+            distinct_initial_values=task.distinct_initial_values,
+            require_strict_witness=task.require_strict_witness,
+            allow_self_reference=task.allow_self_reference,
+            periodic_constant_probability=task.periodic_constant_probability,
+            rng=random.Random(retry_seed),
+        )
+        instances = tuple(derive_instance(source, complexity=complexity) for complexity in Complexity)
+        if not ({instance.instance_id for instance in instances} & task.excluded_semantics):
+            return task, source, instances
+    raise RuntimeError(f"could not generate source {task.source_example_id!r} after 10000 attempts")
+
+
+def build_dataset(
+    loaded: LoadedExperiment,
+    *,
+    output_dir: Path | None = None,
+    workers: int = 1,
+) -> Path:
     """Generate canonical and rendered JSONL artifacts from an experiment."""
 
     spec = loaded.spec
+    if workers < 1:
+        raise ValueError("workers must be positive")
     root = output_dir or _resolve_relative(loaded.path.parent, spec.dataset.output_dir)
     root.mkdir(parents=True, exist_ok=True)
     canonical_dir = root / "canonical"
@@ -73,6 +133,7 @@ def build_dataset(loaded: LoadedExperiment, *, output_dir: Path | None = None) -
         dynamic_ncols=True,
         disable=None,
     )
+    executor = ProcessPoolExecutor(max_workers=workers) if workers > 1 else None
     try:
         for split in spec.splits:
             if split in spec.output.omit_canonical_splits:
@@ -174,59 +235,46 @@ def build_dataset(loaded: LoadedExperiment, *, output_dir: Path | None = None) -
                             total_samples=split_spec.samples_per_condition,
                             rng=filler_rng,
                         )
-                    for sample_index, (plan_item, filler_item) in enumerate(
-                        zip(assignment_plan, filler_plan, strict=True)
-                    ):
-                        source_example_id = _example_id(
-                            dataset=spec.dataset.name,
-                            split=split_name,
-                            complexity="periodic-source",
-                            num_variables=num_variables,
-                            num_values=condition.num_values,
-                            condition_index=condition_index,
-                            sample_index=sample_index,
-                            target_extra_assignments=plan_item.target_extra_assignments,
-                            filler_proportion=filler_item.proportion,
-                            filler_distraction=filler_item.distraction,
-                        )
-                        semantic_seed = derive_seed(spec.dataset.seed, "semantic", source_example_id)
-                        for retry_index in range(10_000):
-                            retry_seed = (
-                                semantic_seed
-                                if retry_index == 0
-                                else derive_seed(
-                                    spec.dataset.seed,
-                                    "semantic-retry",
-                                    source_example_id,
-                                    str(retry_index),
-                                )
-                            )
-                            source = generate_periodic_source(
+                    planned_samples = enumerate(zip(assignment_plan, filler_plan, strict=True))
+                    tasks = (
+                        _GenerationTask(
+                            source_example_id=_example_id(
+                                dataset=spec.dataset.name,
+                                split=split_name,
+                                complexity="periodic-source",
                                 num_variables=num_variables,
                                 num_values=condition.num_values,
-                                min_extra_assignments=plan_item.min_extra_assignments,
-                                max_extra_assignments=plan_item.max_extra_assignments,
-                                query_mode=spec.generation.query_mode,
-                                distinct_initial_values=spec.generation.distinct_initial_values,
-                                require_strict_witness=spec.generation.require_strict_witness,
-                                allow_self_reference=spec.generation.allow_self_reference,
-                                periodic_constant_probability=(spec.generation.periodic_constant_probability),
-                                rng=random.Random(retry_seed),
-                            )
-                            instances = tuple(
-                                derive_instance(source, complexity=complexity)
-                                for complexity in Complexity
-                            )
-                            if not (
-                                {instance.instance_id for instance in instances}
-                                & excluded_semantics
-                            ):
-                                break
-                        else:
-                            raise RuntimeError(
-                                f"could not generate {split_name!r} example disjoint from "
-                                f"{split_spec.disjoint_from!r} after 10000 attempts"
-                            )
+                                condition_index=condition_index,
+                                sample_index=sample_index,
+                                target_extra_assignments=plan_item.target_extra_assignments,
+                                filler_proportion=filler_item.proportion,
+                                filler_distraction=filler_item.distraction,
+                            ),
+                            num_variables=num_variables,
+                            num_values=condition.num_values,
+                            min_extra_assignments=plan_item.min_extra_assignments,
+                            max_extra_assignments=plan_item.max_extra_assignments,
+                            query_mode=spec.generation.query_mode,
+                            distinct_initial_values=spec.generation.distinct_initial_values,
+                            require_strict_witness=spec.generation.require_strict_witness,
+                            allow_self_reference=spec.generation.allow_self_reference,
+                            periodic_constant_probability=spec.generation.periodic_constant_probability,
+                            root_seed=spec.dataset.seed,
+                            excluded_semantics=frozenset(excluded_semantics),
+                            plan_item=plan_item,
+                            filler_item=filler_item,
+                        )
+                        for sample_index, (plan_item, filler_item) in planned_samples
+                    )
+                    generated_samples = (
+                        executor.map(_generate_instances, tasks, chunksize=64)
+                        if executor is not None
+                        else map(_generate_instances, tasks)
+                    )
+                    for task, source, instances in generated_samples:
+                        source_example_id = task.source_example_id
+                        plan_item = task.plan_item
+                        filler_item = task.filler_item
                         for complexity, instance in zip(Complexity, instances, strict=True):
                             example_id = _derived_example_id(source_example_id, complexity)
                             needs_canonical_record = (
@@ -343,6 +391,8 @@ def build_dataset(loaded: LoadedExperiment, *, output_dir: Path | None = None) -
                             progress.update()
     finally:
         progress.close()
+        if executor is not None:
+            executor.shutdown()
         for handle in (*canonical_handles.values(), *rendered_handles.values()):
             handle.close()
 

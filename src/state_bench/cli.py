@@ -30,6 +30,7 @@ def build_parser() -> argparse.ArgumentParser:
     build = commands.add_parser("build", help="Generate canonical and rendered JSONL files.")
     build.add_argument("config", type=Path)
     build.add_argument("--output-dir", type=Path)
+    build.add_argument("--workers", type=int, default=1, help="Process workers for source generation.")
 
     sample = commands.add_parser("sample", help="Print one generated sample for a rendered config.")
     sample.add_argument("config", type=Path, help="Experiment YAML file.")
@@ -107,7 +108,7 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     if args.command == "build":
         loaded = load_experiment(args.config)
-        print(build_dataset(loaded, output_dir=args.output_dir))
+        print(build_dataset(loaded, output_dir=args.output_dir, workers=args.workers))
         return 0
 
     if args.command == "sample":
