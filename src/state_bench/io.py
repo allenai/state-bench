@@ -6,19 +6,22 @@ import hashlib
 import json
 import os
 import random
+import shutil
+import tempfile
 from collections import Counter, defaultdict
 from collections.abc import Mapping
 from concurrent.futures import ProcessPoolExecutor
 from dataclasses import dataclass
 from datetime import UTC, datetime
-from itertools import repeat
+from itertools import batched, repeat
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 from tqdm.auto import tqdm
 
 from state_bench.config import (
     AssignmentRange,
+    FormatterSpec,
     LoadedExperiment,
     condition_uses_formatter,
     condition_uses_split,
@@ -27,7 +30,7 @@ from state_bench.config import (
 from state_bench.distractors import generate_incorrect_states
 from state_bench.generation import derive_instance, generate_periodic_source
 from state_bench.model import Complexity, QueryMode, StateTrackingInstance
-from state_bench.rendering import render_instance
+from state_bench.rendering import RenderedExample, render_instance
 from state_bench.scheduling import (
     AssignmentPlanItem,
     FillerPlanItem,
@@ -70,6 +73,24 @@ class _GeneratedSample:
     instances: tuple[StateTrackingInstance, ...]
 
 
+@dataclass(frozen=True, slots=True)
+class _MinimalChunkTask:
+    """A bounded source range rendered and serialized entirely by one worker."""
+
+    chunk_index: int
+    samples: tuple[_GenerationTask, ...]
+    formatters: tuple[FormatterSpec, ...]
+    config_naming: str
+    chunk_dir: Path
+
+
+@dataclass(frozen=True, slots=True)
+class _MinimalChunkResult:
+    chunk_index: int
+    source_count: int
+    files: tuple[tuple[str, Path, int], ...]
+
+
 def _generate_instances(
     task: _GenerationTask,
 ) -> _GeneratedSample:
@@ -104,6 +125,68 @@ def _generate_instances(
                 instances=instances,
             )
     raise RuntimeError(f"could not generate source {task.source_example_id!r} after 10000 attempts")
+
+
+def _write_minimal_chunk(task: _MinimalChunkTask) -> _MinimalChunkResult:
+    """Generate, render, serialize, and write one deterministic minimal chunk."""
+
+    handles: dict[str, Any] = {}
+    paths: dict[str, Path] = {}
+    counts: Counter[str] = Counter()
+    try:
+        for sample_task in task.samples:
+            generated = _generate_instances(sample_task)
+            for complexity, instance in zip(Complexity, generated.instances, strict=True):
+                example_id = _derived_example_id(generated.source_example_id, complexity)
+                for formatter in task.formatters:
+                    config_name = hub_config_name(
+                        task.config_naming,
+                        formatter=formatter.name,
+                        complexity=complexity.value,
+                    )
+                    if config_name not in handles:
+                        path = task.chunk_dir / config_name / f"{task.chunk_index:08d}.jsonl"
+                        path.parent.mkdir(parents=True, exist_ok=True)
+                        paths[config_name] = path
+                        handles[config_name] = path.open("w", encoding="utf-8")
+                    rendered = render_instance(
+                        instance,
+                        formatter,
+                        rng=random.Random(
+                            derive_seed(
+                                sample_task.root_seed,
+                                "surface",
+                                generated.source_example_id,
+                                formatter.name,
+                            )
+                        ),
+                        incorrect_states=(),
+                        shuffle_choices=False,
+                        filler_proportion=generated.filler_item.proportion,
+                        filler_distraction=generated.filler_item.distraction,
+                        include_diagnostics=False,
+                    )
+                    write_json_line(
+                        handles[config_name],
+                        _minimal_rendered_record(
+                            example_id=example_id,
+                            source_example_id=generated.source_example_id,
+                            source_instance_id=generated.source.instance_id,
+                            rendered=rendered,
+                        ),
+                    )
+                    counts[config_name] += 1
+    finally:
+        for handle in handles.values():
+            handle.close()
+    return _MinimalChunkResult(
+        chunk_index=task.chunk_index,
+        source_count=len(task.samples),
+        files=tuple(
+            (config_name, paths[config_name], counts[config_name])
+            for config_name in sorted(paths)
+        ),
+    )
 
 
 def build_dataset(
@@ -165,6 +248,7 @@ def build_dataset(
             executor = None
     else:
         executor = None
+    chunk_root: Path | None = None
     try:
         for split in spec.splits:
             if split in spec.output.omit_canonical_splits:
@@ -298,6 +382,51 @@ def build_dataset(
                         )
                         for sample_index, (plan_item, filler_item) in planned_samples
                     )
+                    use_minimal_chunks = (
+                        executor is not None
+                        and split_name in spec.output.minimal_splits
+                        and split_name in spec.output.omit_canonical_splits
+                        and not spec.output.track_unique_semantics
+                        and split_name not in referenced_splits
+                    )
+                    if use_minimal_chunks:
+                        if chunk_root is None:
+                            chunk_root = Path(tempfile.mkdtemp(prefix=".state-bench-chunks-", dir=root))
+                        selected_formatters = tuple(
+                            formatter
+                            for formatter in loaded.formatters
+                            if condition_uses_formatter(condition, formatter.name)
+                            and split_uses_formatter(split_spec, formatter.name)
+                        )
+                        chunk_tasks = (
+                            _MinimalChunkTask(
+                                chunk_index=chunk_index,
+                                samples=tuple(sample_batch),
+                                formatters=selected_formatters,
+                                config_naming=spec.huggingface.config_naming,
+                                chunk_dir=chunk_root,
+                            )
+                            for chunk_index, sample_batch in enumerate(
+                                batched(tasks, 4096, strict=False)
+                            )
+                        )
+                        chunk_results = executor.map(
+                            _write_minimal_chunk,
+                            chunk_tasks,
+                            chunksize=1,
+                            buffersize=max(1, workers * 2),
+                        )
+                        for result in chunk_results:
+                            for config_name, chunk_path, row_count in result.files:
+                                with chunk_path.open(encoding="utf-8") as chunk_handle:
+                                    shutil.copyfileobj(
+                                        chunk_handle,
+                                        rendered_handles[(config_name, split_name)],
+                                    )
+                                chunk_path.unlink()
+                                counts[f"{config_name}/{split_name}"] += row_count
+                            progress.update(len(Complexity) * result.source_count)
+                        continue
                     generated_samples = (
                         executor.map(
                             _generate_instances,
@@ -396,16 +525,15 @@ def build_dataset(
                                 )
                                 rendered_record: dict[str, Any]
                                 if minimal_output:
-                                    rendered_record = {
-                                        "example_id": example_id,
-                                        "source_example_id": source_example_id,
-                                        "source_instance_id": source.instance_id,
-                                        "instance_id": rendered.instance_id,
-                                        "formatter": rendered.formatter,
-                                        "complexity": rendered.complexity,
-                                        "prefix": rendered.prefix,
-                                        "completion": rendered.completion,
-                                    }
+                                    rendered_record = cast(
+                                        "dict[str, Any]",
+                                        _minimal_rendered_record(
+                                            example_id=example_id,
+                                            source_example_id=source_example_id,
+                                            source_instance_id=source.instance_id,
+                                            rendered=rendered,
+                                        ),
+                                    )
                                 else:
                                     rendered_record = {
                                     "example_id": example_id,
@@ -442,6 +570,8 @@ def build_dataset(
             executor.shutdown()
         for handle in (*canonical_handles.values(), *rendered_handles.values()):
             handle.close()
+        if chunk_root is not None:
+            shutil.rmtree(chunk_root, ignore_errors=True)
 
     file_hashes: dict[str, str] = {}
     if spec.output.hash_files:
@@ -491,6 +621,25 @@ def read_jsonl(path: Path) -> list[dict[str, Any]]:
 def write_json_line(handle: Any, record: Mapping[str, Any]) -> None:
     handle.write(json.dumps(record, ensure_ascii=False, separators=(",", ":")))
     handle.write("\n")
+
+
+def _minimal_rendered_record(
+    *,
+    example_id: str,
+    source_example_id: str,
+    source_instance_id: str,
+    rendered: RenderedExample,
+) -> dict[str, str]:
+    return {
+        "example_id": example_id,
+        "source_example_id": source_example_id,
+        "source_instance_id": source_instance_id,
+        "instance_id": rendered.instance_id,
+        "formatter": rendered.formatter,
+        "complexity": rendered.complexity,
+        "prefix": rendered.prefix,
+        "completion": rendered.completion,
+    }
 
 
 def _assignment_range_item(spec: AssignmentRange) -> AssignmentPlanItem:

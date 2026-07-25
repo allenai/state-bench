@@ -245,6 +245,30 @@ def test_minimal_split_skips_distractors_and_dependency_diagnostics(
     assert not (output / "canonical/train.jsonl").exists()
 
 
+def test_parallel_minimal_chunks_preserve_bytes_and_cleanup(tmp_path: Path) -> None:
+    experiment = _small_experiment(tmp_path)
+    source = yaml.safe_load(experiment.read_text(encoding="utf-8"))
+    source["splits"] = {"train": {"samples_per_condition": 20}}
+    source["output"]["minimal_splits"] = ["train"]
+    source["output"]["omit_canonical_splits"] = ["train"]
+    source["output"]["track_unique_semantics"] = False
+    source["output"]["hash_files"] = False
+    experiment.write_text(yaml.safe_dump(source, sort_keys=False), encoding="utf-8")
+    loaded = load_experiment(experiment)
+    serial = build_dataset(loaded, output_dir=tmp_path / "minimal-serial", workers=1)
+    parallel = build_dataset(loaded, output_dir=tmp_path / "minimal-parallel", workers=2)
+    serial_files = {
+        str(path.relative_to(serial)): path.read_bytes()
+        for path in serial.rglob("*.jsonl")
+    }
+    parallel_files = {
+        str(path.relative_to(parallel)): path.read_bytes()
+        for path in parallel.rglob("*.jsonl")
+    }
+    assert parallel_files == serial_files
+    assert not list(parallel.glob(".state-bench-chunks-*"))
+
+
 def test_split_scoping_and_disjoint_generation_preserve_existing_test_bytes(
     tmp_path: Path,
 ) -> None:
