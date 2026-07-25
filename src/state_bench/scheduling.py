@@ -5,6 +5,7 @@ from __future__ import annotations
 import math
 import random
 from collections import Counter
+from collections.abc import Iterator
 from dataclasses import dataclass
 
 from state_bench.config import (
@@ -53,6 +54,34 @@ def build_filler_plan(
     ]
     rng.shuffle(plan)
     return tuple(plan)
+
+
+def iter_balanced_filler_plan(
+    spec: FillerSpec,
+    *,
+    total_samples: int,
+    rng: random.Random,
+) -> Iterator[FillerPlanItem]:
+    """Yield an exactly balanced filler schedule without an O(n) list.
+
+    Each small cycle is shuffled independently. This preserves balanced counts
+    and avoids a giant allocation for corpus-scale range conditions.
+    """
+
+    variants = filler_variants(spec)
+    if 0 < total_samples < len(variants):
+        raise ValueError(
+            f"samples_per_condition={total_samples} cannot cover {len(variants)} filler variants"
+        )
+    quotient, remainder = divmod(total_samples, len(variants))
+    for _ in range(quotient):
+        cycle = list(variants)
+        rng.shuffle(cycle)
+        yield from (FillerPlanItem(proportion, distraction) for proportion, distraction in cycle)
+    if remainder:
+        cycle = list(variants)
+        rng.shuffle(cycle)
+        yield from (FillerPlanItem(proportion, distraction) for proportion, distraction in cycle[:remainder])
 
 
 def build_stratified_filler_plan(

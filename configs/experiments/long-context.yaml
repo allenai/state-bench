@@ -103,6 +103,18 @@ output:
   local_format: jsonl
   include_canonical_trace: true
   include_final_state: true
+  # The training corpus is consumed as prompt/completion pairs. Avoid storing
+  # redundant semantic traces, choices, and a canonical copy for every row.
+  # Test remains the full inspection/evaluation artifact.
+  minimal_splits: [train]
+  omit_canonical_splits: [train]
+  # Keeping a Python set of every generated semantic ID is infeasible at the
+  # multi-billion-token training scale. Test IDs are still retained to enforce
+  # train/test disjointness.
+  track_unique_semantics: false
+  # Skip the post-build reread of the entire corpus. Hub staging hashes its
+  # published artifact independently.
+  hash_files: false
   # Long rows are sharded much more finely to keep Parquet conversion and
   # selective downloads manageable.
   shard_size: 50

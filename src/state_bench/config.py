@@ -198,6 +198,12 @@ class OutputSpec(StrictModel):
     local_format: Literal["jsonl"] = "jsonl"
     include_canonical_trace: bool = True
     include_final_state: bool = True
+    # Large training corpora generally only need prompt/completion pairs. These
+    # switches keep the richer evaluation artifact as the default.
+    minimal_splits: list[str] = []
+    omit_canonical_splits: list[str] = []
+    track_unique_semantics: bool = True
+    hash_files: bool = True
     shard_size: PositiveInt = 100_000
     target_shard_bytes: PositiveInt = 256_000_000
     multiple_choice: MultipleChoiceSpec = MultipleChoiceSpec()
@@ -326,6 +332,14 @@ class ExperimentSpec(StrictModel):
                 for condition in self.generation.conditions
             ):
                 raise ValueError(f"split {split_name!r} has no generation conditions")
+        output_splits = set(self.output.minimal_splits) | set(self.output.omit_canonical_splits)
+        unknown_output_splits = output_splits - self.splits.keys()
+        if unknown_output_splits:
+            raise ValueError(f"output references unknown splits: {sorted(unknown_output_splits)}")
+        if len(set(self.output.minimal_splits)) != len(self.output.minimal_splits):
+            raise ValueError("output.minimal_splits must not contain duplicates")
+        if len(set(self.output.omit_canonical_splits)) != len(self.output.omit_canonical_splits):
+            raise ValueError("output.omit_canonical_splits must not contain duplicates")
         return self
 
 

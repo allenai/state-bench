@@ -363,18 +363,21 @@ def _optional_render(
 
 
 def _substitute(template: str, *, allowed: set[str], **values: str) -> str:
-    identifiers = {
-        match.group("named") or match.group("braced")
-        for match in Template.pattern.finditer(template)
-        if match.group("named") or match.group("braced")
-    }
-    unknown = identifiers - allowed
-    if unknown:
-        raise ValueError(f"unknown template placeholders: {sorted(unknown)}")
+    # FormatterSpec validates every template once while loading configuration.
+    # Cache the defensive runtime check for programmatically constructed specs.
+    _validate_runtime_template(template, tuple(sorted(allowed)))
     try:
         return Template(template).substitute(values)
     except (KeyError, ValueError) as error:
         raise ValueError(f"invalid template: {template!r}") from error
+
+
+@cache
+def _validate_runtime_template(template: str, allowed: tuple[str, ...]) -> None:
+    identifiers = set(Template(template).get_identifiers())
+    unknown = identifiers - set(allowed)
+    if unknown:
+        raise ValueError(f"unknown template placeholders: {sorted(unknown)}")
 
 
 def _validate_capacity(instance: StateTrackingInstance, formatter: FormatterSpec) -> None:

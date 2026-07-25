@@ -8,12 +8,14 @@ import random
 from collections import Counter, defaultdict
 from collections.abc import Mapping
 from datetime import UTC, datetime
+from itertools import repeat
 from pathlib import Path
 from typing import Any
 
 from tqdm.auto import tqdm
 
 from state_bench.config import (
+    AssignmentRange,
     LoadedExperiment,
     condition_uses_formatter,
     condition_uses_split,
@@ -24,9 +26,11 @@ from state_bench.generation import derive_instance, generate_periodic_source
 from state_bench.model import Complexity
 from state_bench.rendering import render_instance
 from state_bench.scheduling import (
+    AssignmentPlanItem,
     build_assignment_plan,
     build_filler_plan,
     build_stratified_filler_plan,
+    iter_balanced_filler_plan,
 )
 from state_bench.semantics import dependency_summary
 
@@ -45,6 +49,9 @@ def build_dataset(loaded: LoadedExperiment, *, output_dir: Path | None = None) -
     counts: Counter[str] = Counter()
     unique_semantics: dict[str, set[str]] = defaultdict(set)
     split_semantics: dict[str, set[str]] = defaultdict(set)
+    referenced_splits = {
+        referenced for split in spec.splits.values() for referenced in split.disjoint_from
+    }
     generated_files: list[Path] = []
 
     canonical_handles: dict[str, Any] = {}
@@ -68,6 +75,11 @@ def build_dataset(loaded: LoadedExperiment, *, output_dir: Path | None = None) -
     )
     try:
         for split in spec.splits:
+            if split in spec.output.omit_canonical_splits:
+                # A rebuild may reuse an output directory created before this
+                # split was made minimal; do not leave stale canonical rows.
+                (canonical_dir / f"{split}.jsonl").unlink(missing_ok=True)
+                continue
             path = canonical_dir / f"{split}.jsonl"
             canonical_handles[split] = path.open("w", encoding="utf-8")
             generated_files.append(path)
@@ -110,19 +122,27 @@ def build_dataset(loaded: LoadedExperiment, *, output_dir: Path | None = None) -
                         variables=num_variables,
                         refresh=False,
                     )
-                    assignment_plan = build_assignment_plan(
-                        condition.extra_assignments,
-                        total_samples=split_spec.samples_per_condition,
-                        rng=random.Random(
-                            derive_seed(
-                                spec.dataset.seed,
-                                "assignment-plan",
-                                split_name,
-                                str(condition_index),
-                                str(num_variables),
-                            )
-                        ),
-                    )
+                    if isinstance(condition.extra_assignments, AssignmentRange):
+                        assignment_plan = repeat(
+                            # Ranges use the same bounds for every source, so
+                            # one shared item is sufficient.
+                            _assignment_range_item(condition.extra_assignments),
+                            split_spec.samples_per_condition,
+                        )
+                    else:
+                        assignment_plan = build_assignment_plan(
+                            condition.extra_assignments,
+                            total_samples=split_spec.samples_per_condition,
+                            rng=random.Random(
+                                derive_seed(
+                                    spec.dataset.seed,
+                                    "assignment-plan",
+                                    split_name,
+                                    str(condition_index),
+                                    str(num_variables),
+                                )
+                            ),
+                        )
                     filler_rng = random.Random(
                         derive_seed(
                             spec.dataset.seed,
@@ -133,9 +153,19 @@ def build_dataset(loaded: LoadedExperiment, *, output_dir: Path | None = None) -
                         )
                     )
                     if condition.filler.stratify_by_assignment_bucket:
+                        # Stratification needs bucket membership, which is
+                        # currently represented by the finite assignment plan.
+                        if not isinstance(assignment_plan, tuple):
+                            assignment_plan = tuple(assignment_plan)
                         filler_plan = build_stratified_filler_plan(
                             condition.filler,
                             assignment_plan=assignment_plan,
+                            rng=filler_rng,
+                        )
+                    elif split_spec.samples_per_condition >= 100_000:
+                        filler_plan = iter_balanced_filler_plan(
+                            condition.filler,
+                            total_samples=split_spec.samples_per_condition,
                             rng=filler_rng,
                         )
                     else:
@@ -199,21 +229,51 @@ def build_dataset(loaded: LoadedExperiment, *, output_dir: Path | None = None) -
                             )
                         for complexity, instance in zip(Complexity, instances, strict=True):
                             example_id = _derived_example_id(source_example_id, complexity)
-                            canonical_record = {
-                                "example_id": example_id,
-                                "source_example_id": source_example_id,
-                                "source_instance_id": source.instance_id,
-                                **instance.to_record(),
-                                **dependency_summary(instance).to_record(),
-                                "num_extra_assignments": len(instance.operations) - num_variables,
-                                "target_extra_assignments": plan_item.target_extra_assignments,
-                                "filler_proportion": filler_item.proportion,
-                                "filler_distraction": filler_item.distraction,
-                            }
-                            write_json_line(canonical_handles[split_name], canonical_record)
-                            counts[f"canonical/{split_name}"] += 1
-                            unique_semantics[f"canonical/{split_name}"].add(instance.instance_id)
-                            split_semantics[split_name].add(instance.instance_id)
+                            needs_canonical_record = (
+                                split_name in canonical_handles
+                                or split_name not in spec.output.minimal_splits
+                            )
+                            canonical_record: dict[str, Any] | None = None
+                            if needs_canonical_record:
+                                canonical_record = {
+                                    "example_id": example_id,
+                                    "source_example_id": source_example_id,
+                                    "source_instance_id": source.instance_id,
+                                    **instance.to_record(),
+                                    **dependency_summary(instance).to_record(),
+                                    "num_extra_assignments": len(instance.operations) - num_variables,
+                                    "target_extra_assignments": plan_item.target_extra_assignments,
+                                    "filler_proportion": filler_item.proportion,
+                                    "filler_distraction": filler_item.distraction,
+                                }
+                            if split_name in canonical_handles:
+                                assert canonical_record is not None
+                                write_json_line(canonical_handles[split_name], canonical_record)
+                                counts[f"canonical/{split_name}"] += 1
+                            if spec.output.track_unique_semantics:
+                                unique_semantics[f"canonical/{split_name}"].add(instance.instance_id)
+                            # Retain only semantics that a later split needs for
+                            # disjointness. Keeping every training ID is prohibitive
+                            # for multi-billion-token builds.
+                            if spec.output.track_unique_semantics or split_name in referenced_splits:
+                                split_semantics[split_name].add(instance.instance_id)
+
+                            include_trace = (
+                                split_name not in spec.output.minimal_splits
+                                and spec.output.include_canonical_trace
+                            )
+                            source_operations = (
+                                [operation.to_record() for operation in source.operations]
+                                if include_trace
+                                else None
+                            )
+                            incorrect_states = generate_incorrect_states(
+                                instance,
+                                num_distractors=spec.output.multiple_choice.num_distractors,
+                                rng=random.Random(
+                                    derive_seed(spec.dataset.seed, "distractors", example_id)
+                                ),
+                            )
 
                             for formatter in loaded.formatters:
                                 if not (
@@ -232,13 +292,6 @@ def build_dataset(loaded: LoadedExperiment, *, output_dir: Path | None = None) -
                                     source_example_id,
                                     formatter.name,
                                 )
-                                incorrect_states = generate_incorrect_states(
-                                    instance,
-                                    num_distractors=spec.output.multiple_choice.num_distractors,
-                                    rng=random.Random(
-                                        derive_seed(spec.dataset.seed, "distractors", example_id)
-                                    ),
-                                )
                                 rendered = render_instance(
                                     instance,
                                     formatter,
@@ -248,29 +301,45 @@ def build_dataset(loaded: LoadedExperiment, *, output_dir: Path | None = None) -
                                     filler_proportion=filler_item.proportion,
                                     filler_distraction=filler_item.distraction,
                                 )
-                                rendered_record = {
+                                if split_name in spec.output.minimal_splits:
+                                    rendered_record = {
+                                        "example_id": example_id,
+                                        "source_example_id": source_example_id,
+                                        "source_instance_id": source.instance_id,
+                                        "instance_id": rendered.instance_id,
+                                        "formatter": rendered.formatter,
+                                        "complexity": rendered.complexity,
+                                        "prefix": rendered.prefix,
+                                        "completion": rendered.completion,
+                                    }
+                                else:
+                                    rendered_record = {
                                     "example_id": example_id,
                                     "source_example_id": source_example_id,
                                     "source_instance_id": source.instance_id,
                                     **rendered.to_record(),
                                     "num_extra_assignments": len(instance.operations) - num_variables,
                                     "target_extra_assignments": plan_item.target_extra_assignments,
-                                }
-                                if spec.output.include_canonical_trace:
+                                    }
+                                if include_trace:
+                                    assert canonical_record is not None
+                                    assert source_operations is not None
                                     rendered_record["operations"] = canonical_record["operations"]
-                                    rendered_record["source_operations"] = [
-                                        operation.to_record() for operation in source.operations
-                                    ]
+                                    rendered_record["source_operations"] = source_operations
                                     rendered_record["query"] = canonical_record["query"]
-                                if spec.output.include_final_state:
+                                if (
+                                    split_name not in spec.output.minimal_splits
+                                    and spec.output.include_final_state
+                                ):
                                     rendered_record["final_state"] = canonical_record["final_state"]
                                 write_json_line(
                                     rendered_handles[(config_name, split_name)], rendered_record
                                 )
                                 counts[f"{config_name}/{split_name}"] += 1
-                                unique_semantics[f"{config_name}/{split_name}"].add(
-                                    instance.instance_id
-                                )
+                                if spec.output.track_unique_semantics:
+                                    unique_semantics[f"{config_name}/{split_name}"].add(
+                                        instance.instance_id
+                                    )
                             progress.update()
     finally:
         progress.close()
@@ -278,21 +347,22 @@ def build_dataset(loaded: LoadedExperiment, *, output_dir: Path | None = None) -
             handle.close()
 
     file_hashes: dict[str, str] = {}
-    hash_progress = tqdm(
-        total=len(generated_files),
-        desc="Hashing dataset files",
-        unit="file",
-        dynamic_ncols=True,
-        disable=None,
-    )
-    try:
-        for path in sorted(generated_files):
-            relative_path = str(path.relative_to(root))
-            hash_progress.set_postfix(file=relative_path, refresh=False)
-            file_hashes[relative_path] = sha256_file(path)
-            hash_progress.update()
-    finally:
-        hash_progress.close()
+    if spec.output.hash_files:
+        hash_progress = tqdm(
+            total=len(generated_files),
+            desc="Hashing dataset files",
+            unit="file",
+            dynamic_ncols=True,
+            disable=None,
+        )
+        try:
+            for path in sorted(generated_files):
+                relative_path = str(path.relative_to(root))
+                hash_progress.set_postfix(file=relative_path, refresh=False)
+                file_hashes[relative_path] = sha256_file(path)
+                hash_progress.update()
+        finally:
+            hash_progress.close()
 
     manifest = {
         "schema_version": 1,
@@ -302,7 +372,11 @@ def build_dataset(loaded: LoadedExperiment, *, output_dir: Path | None = None) -
         "experiment_config_hash": normalized_hash(spec.model_dump(mode="json")),
         "formatter_config_hashes": {formatter.name: formatter.config_hash for formatter in loaded.formatters},
         "counts": dict(sorted(counts.items())),
-        "unique_semantic_counts": {key: len(value) for key, value in sorted(unique_semantics.items())},
+        "unique_semantic_counts": (
+            {key: len(value) for key, value in sorted(unique_semantics.items())}
+            if spec.output.track_unique_semantics
+            else None
+        ),
         "cross_split_semantic_overlap": _split_overlap(split_semantics),
         "files": file_hashes,
         "huggingface": spec.huggingface.model_dump(mode="json"),
@@ -320,6 +394,14 @@ def read_jsonl(path: Path) -> list[dict[str, Any]]:
 def write_json_line(handle: Any, record: Mapping[str, Any]) -> None:
     handle.write(json.dumps(record, ensure_ascii=False, separators=(",", ":")))
     handle.write("\n")
+
+
+def _assignment_range_item(spec: AssignmentRange) -> AssignmentPlanItem:
+    return AssignmentPlanItem(
+        min_extra_assignments=spec.min,
+        max_extra_assignments=spec.max,
+        target_extra_assignments=None,
+    )
 
 
 def hub_config_name(pattern: str, *, formatter: str, complexity: str) -> str:
