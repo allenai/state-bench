@@ -81,7 +81,7 @@ def test_long_context_experiment_config_loads() -> None:
     assert loaded.spec.dataset.name == "state-tracking-long-context-v1"
     assert loaded.spec.splits["test"].samples_per_condition == 340
     train = loaded.spec.splits["train"]
-    assert train.samples_per_condition == 1_000_000
+    assert train.samples_per_condition == 340
     assert train.formatters == ["integer-code"]
     assert train.disjoint_from == ["test"]
     assert len(loaded.spec.generation.conditions) == 4
@@ -101,7 +101,7 @@ def test_long_context_experiment_config_loads() -> None:
     assert training.splits == ["train"]
     assert training.formatters == ["integer-code"]
     assert training.extra_assignments.min == training.extra_assignments.max == 1
-    assert training.filler.proportions == [0.0, 0.25, 0.5, 0.75, 0.9]
+    assert training.filler.proportions == [0.0, 0.25]
     assert training.filler.distraction_levels == ["easy"]
     assert padded_long.splits == ["test"]
     assert padded_long.formatters == ["integer-code"]

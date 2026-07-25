@@ -164,8 +164,8 @@ lines. An additional integer-code test condition applies 25% padding at every
 assignment bucket, stratified across easy, medium, and hard padding. It is
 appended after the original conditions, so existing test rows retain their
 identities and contents. The training split uses only the short-trace condition
-and its simple `easy` padding style across the same five proportions. It renders
-only `integer-code` and is generated disjoint from the unchanged test
+and its simple `easy` padding style at 25%, alongside the unpadded baseline. It
+renders only `integer-code` and is generated disjoint from the unchanged test
 semantics. Hub Parquet shards are capped at 50 long rows apiece.
 
 Rows include `source_example_id` and `source_instance_id` so every derived
