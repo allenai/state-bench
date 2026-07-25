@@ -30,7 +30,11 @@ def build_parser() -> argparse.ArgumentParser:
     build = commands.add_parser("build", help="Generate canonical and rendered JSONL files.")
     build.add_argument("config", type=Path)
     build.add_argument("--output-dir", type=Path)
-    build.add_argument("--workers", type=int, default=1, help="Process workers for source generation.")
+    build.add_argument(
+        "--workers",
+        type=int,
+        help="Process workers for source generation (defaults to available CPUs minus one).",
+    )
 
     sample = commands.add_parser("sample", help="Print one generated sample for a rendered config.")
     sample.add_argument("config", type=Path, help="Experiment YAML file.")

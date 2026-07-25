@@ -184,6 +184,27 @@ def test_parallel_generation_preserves_rendered_bytes(tmp_path: Path) -> None:
     assert parallel_files == serial_files
 
 
+def test_build_defaults_to_cpus_minus_one(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    experiment = _small_experiment(tmp_path)
+    monkeypatch.setattr("state_bench.io.os.cpu_count", lambda: 5)
+    created_workers: list[int] = []
+
+    class RecordingExecutor:
+        def __init__(self, *, max_workers: int) -> None:
+            created_workers.append(max_workers)
+
+        def map(self, function: object, items: object, *, chunksize: int) -> object:
+            del chunksize
+            return map(function, items)  # type: ignore[arg-type]
+
+        def shutdown(self) -> None:
+            pass
+
+    monkeypatch.setattr("state_bench.io.ProcessPoolExecutor", RecordingExecutor)
+    build_dataset(load_experiment(experiment))
+    assert created_workers == [4]
+
+
 def test_split_scoping_and_disjoint_generation_preserve_existing_test_bytes(
     tmp_path: Path,
 ) -> None:

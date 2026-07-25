@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import random
 from collections import Counter, defaultdict
 from collections.abc import Mapping
@@ -92,11 +93,13 @@ def build_dataset(
     loaded: LoadedExperiment,
     *,
     output_dir: Path | None = None,
-    workers: int = 1,
+    workers: int | None = None,
 ) -> Path:
     """Generate canonical and rendered JSONL artifacts from an experiment."""
 
     spec = loaded.spec
+    auto_workers = workers is None
+    workers = max(1, (os.cpu_count() or 1) - 1) if auto_workers else workers
     if workers < 1:
         raise ValueError("workers must be positive")
     root = output_dir or _resolve_relative(loaded.path.parent, spec.dataset.output_dir)
@@ -133,7 +136,18 @@ def build_dataset(
         dynamic_ncols=True,
         disable=None,
     )
-    executor = ProcessPoolExecutor(max_workers=workers) if workers > 1 else None
+    if workers > 1:
+        try:
+            executor = ProcessPoolExecutor(max_workers=workers)
+        except (NotImplementedError, PermissionError):
+            # Some restricted execution environments disallow OS semaphores.
+            # The automatic setting should remain usable there; an explicit
+            # worker request still reports the platform limitation.
+            if not auto_workers:
+                raise
+            executor = None
+    else:
+        executor = None
     try:
         for split in spec.splits:
             if split in spec.output.omit_canonical_splits:
