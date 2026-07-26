@@ -37,4 +37,4 @@ exec beaker session create \
     --timeout 8h \
     --cpus "$cpus" \
     --gpus "$gpus" \
-    --image jacksonp/beaker-dev
+    --image beaker://jacksonp/beaker-dev
