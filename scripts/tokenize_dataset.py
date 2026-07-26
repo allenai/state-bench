@@ -120,7 +120,10 @@ def main() -> int:
             "dolma",
             "tokens",
             "--documents",
-            str(documents_dir),
+            # Dolma expands a directory to its immediate children. Our
+            # prepared documents are one level deeper, so pass only JSONL
+            # files rather than directories.
+            str(documents_dir / "*" / "*.jsonl"),
             "--destination",
             str(destination / "tokens"),
             "--tokenizer.name_or_path",
