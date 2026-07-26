@@ -16,7 +16,7 @@ import sys
 from pathlib import Path
 from typing import Any  # noqa: I001
 
-DEFAULT_TOKENIZER = "allenai/dolma2-tokenizer"
+DEFAULT_TOKENIZER = "allenai/Olmo-3-1025-7B"
 EOS_TOKEN_ID = 100257
 PAD_TOKEN_ID = 100277
 MAX_SIZE = 4_000_000_000
