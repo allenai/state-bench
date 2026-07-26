@@ -21,6 +21,10 @@ analysis = [
     "pyarrow>=20.0",
     "transformers>=4.57",
 ]
+tokenization = [
+    "dolma>=1.0.8",
+    "huggingface-hub>=1.23.0",
+]
 
 [dependency-groups]
 dev = [

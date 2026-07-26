@@ -36,6 +36,20 @@ Install tokenizer-based dataset analysis support:
 uv sync --extra analysis
 ```
 
+Create Dolma-tokenized variants of generated JSONL datasets:
+
+```bash
+uv sync --extra tokenization
+uv run --extra tokenization python scripts/tokenize_dataset.py data/state-tracking-long-context-v1/rendered
+```
+
+The command creates `data/state-tracking-long-context-v1/rendered-tokenized/`.
+It converts each rendered record's `prefix` and `completion` into a Dolma
+`text` document, then uses the Dolma 2 settings from [the OLMo cookbook tokenization
+guide](https://github.com/allenai/olmo-cookbook/blob/main/docs/how-to-tokenize.md).
+Use `--text-fields prefix` to tokenize prompts only, or `--prepare-only` to
+inspect the generated Dolma documents before tokenization.
+
 ## Configuration
 
 An experiment YAML controls semantic generation, splits, selected formatters,
