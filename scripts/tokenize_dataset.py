@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """Prepare rendered state-bench JSONL as Dolma documents and tokenize it.
 
-This follows Step 3 of the OLMo cookbook's tokenization guide, using the
-Dolma 2 tokenizer and the same tokenization settings.
+This follows Step 3 of the OLMo cookbook's tokenization guide with the
+configured Hugging Face tokenizer and the same tokenization settings.
 """
 
 from __future__ import annotations
@@ -116,34 +116,38 @@ def main() -> int:
 
         tokenizer_dir = destination / "tokenizer"
         snapshot_download(repo_id=args.tokenizer, local_dir=tokenizer_dir)
-        command = [
-            "dolma",
-            "tokens",
-            "--documents",
-            # Dolma expands a directory to its immediate children. Our
-            # prepared documents are one level deeper, so pass only JSONL
-            # files rather than directories.
-            str(documents_dir / "*" / "*.jsonl"),
-            "--destination",
-            str(destination / "tokens"),
-            "--tokenizer.name_or_path",
-            str(tokenizer_dir / "tokenizer.json"),
-            "--tokenizer.eos_token_id",
-            str(EOS_TOKEN_ID),
-            "--tokenizer.pad_token_id",
-            str(PAD_TOKEN_ID),
-            "--no-tokenizer.segment_before_tokenization",
-            "--tokenizer.encode_special_tokens",
-            "--processes",
-            str(args.processes),
-            "--max_size",
-            str(args.max_size),
-            "--sample_ring_prop",
-            "--dtype",
-            "uint32",
-        ]
-        print("Running:", " ".join(command), flush=True)
-        subprocess.run(command, check=True)
+        document_files = sorted(path for path in documents_dir.rglob("*.jsonl") if path.is_file())
+        for index, document_path in enumerate(document_files, start=1):
+            relative_path = document_path.relative_to(documents_dir)
+            split_destination = destination / "tokens" / relative_path.parent / relative_path.stem
+            command = [
+                "dolma",
+                "tokens",
+                "--documents",
+                str(document_path),
+                "--destination",
+                str(split_destination),
+                "--tokenizer.name_or_path",
+                str(tokenizer_dir / "tokenizer.json"),
+                "--tokenizer.eos_token_id",
+                str(EOS_TOKEN_ID),
+                "--tokenizer.pad_token_id",
+                str(PAD_TOKEN_ID),
+                "--no-tokenizer.segment_before_tokenization",
+                "--tokenizer.encode_special_tokens",
+                "--processes",
+                str(args.processes),
+                "--max_size",
+                str(args.max_size),
+                "--sample_ring_prop",
+                "--dtype",
+                "uint32",
+            ]
+            print(
+                f"Tokenizing {relative_path} ({index}/{len(document_files)}) into {split_destination}",
+                flush=True,
+            )
+            subprocess.run(command, check=True)
     except BaseException:
         # Do not leave a partial output that a subsequent run mistakes for success.
         shutil.rmtree(destination, ignore_errors=True)

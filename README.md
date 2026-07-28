@@ -45,8 +45,11 @@ uv run --extra tokenization python scripts/tokenize_dataset.py data/state-tracki
 
 The command creates `data/state-tracking-long-context-v1/rendered-tokenized/`.
 It converts each rendered record's `prefix` and `completion` into a Dolma
-`text` document, then uses the Dolma 2 settings from [the OLMo cookbook tokenization
+`text` document, then uses the settings from [the OLMo cookbook tokenization
 guide](https://github.com/allenai/olmo-cookbook/blob/main/docs/how-to-tokenize.md).
+Each rendered dataset/split is tokenized independently; for example, training
+tokens for `integer-code--periodic` are written under
+`rendered-tokenized/tokens/integer-code--periodic/train/`.
 Use `--text-fields prefix` to tokenize prompts only, or `--prepare-only` to
 inspect the generated Dolma documents before tokenization.
 
