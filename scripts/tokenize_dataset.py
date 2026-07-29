@@ -16,6 +16,8 @@ import sys
 from pathlib import Path
 from typing import Any  # noqa: I001
 
+from tqdm import tqdm
+
 DEFAULT_TOKENIZER = "allenai/Olmo-3-1025-7B"
 EOS_TOKEN_ID = 100257
 PAD_TOKEN_ID = 100277
@@ -66,12 +68,22 @@ def make_document(record: dict[str, Any], fields: list[str], separator: str) -> 
 def prepare_document(source: Path, destination: Path, fields: list[str], separator: str) -> int:
     """Convert one rendered JSONL split into one Dolma JSONL document file."""
     count = 0
+    pending_bytes = 0
     destination.parent.mkdir(parents=True, exist_ok=True)
     with (
-        source.open(encoding="utf-8") as input_file,
+        source.open("rb") as input_file,
         destination.open("w", encoding="utf-8") as output_file,
+        tqdm(
+            total=source.stat().st_size,
+            desc=f"Preparing {source.parent.name}/{source.name}",
+            unit="B",
+            unit_scale=True,
+            mininterval=0.5,
+            disable=not sys.stderr.isatty(),
+        ) as progress,
     ):
         for line_number, line in enumerate(input_file, start=1):
+            pending_bytes += len(line)
             if not line.strip():
                 continue
             try:
@@ -81,6 +93,10 @@ def prepare_document(source: Path, destination: Path, fields: list[str], separat
                 raise ValueError(f"{source}:{line_number}: {error}") from error
             output_file.write(json.dumps(document, ensure_ascii=False, separators=(",", ":")) + "\n")
             count += 1
+            if line_number % 10_000 == 0:
+                progress.update(pending_bytes)
+                pending_bytes = 0
+        progress.update(pending_bytes)
     return count
 
 
