@@ -53,7 +53,9 @@ Each rendered dataset/split is tokenized independently; for example, training
 tokens for `integer-code--periodic` are written under
 `rendered-tokenized/tokens/integer-code--periodic/train/`.
 Normal tokenization prepares one split at a time (all `train` splits first),
-then removes that temporary Dolma document after its token shards are written.
+splitting it into 64 MiB document-preserving JSONL shards so Dolma can use
+multiple workers. The temporary shards are removed after their token shards
+are written; use `--chunk-size` to tune their size in bytes.
 The tokenization extra uses [jopetty/dolma](https://github.com/jopetty/dolma)
 and Python 3.12. Its older tokenizer stack cannot be installed together with
 the `analysis` or `hub` extras; use a separate `uv sync --extra tokenization`

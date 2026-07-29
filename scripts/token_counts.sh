@@ -48,9 +48,14 @@ find "$metadata_dir" -type f -name '*.csv.gz' -print0 \
         # Dolma MemmapMetadata is written as: start,end,id,src,loc.
         NF == 5 {
             path_components = split($4, path, "/")
-            dataset = path[path_components - 1]
-            split_name = path[path_components]
-            sub(/\.jsonl$/, "", split_name)
+            if (path[path_components] ~ /^part-[0-9]+\.jsonl$/) {
+                dataset = path[path_components - 2]
+                split_name = path[path_components - 1]
+            } else {
+                dataset = path[path_components - 1]
+                split_name = path[path_components]
+                sub(/\.jsonl$/, "", split_name)
+            }
             if ((dataset_filter == "" || dataset == dataset_filter) &&
                 (split_filter == "" || split_name == split_filter)) {
                 totals[dataset SUBSEP split_name] += $2 - $1

@@ -22,6 +22,7 @@ DEFAULT_TOKENIZER = "allenai/Olmo-3-1025-7B"
 EOS_TOKEN_ID = 100257
 PAD_TOKEN_ID = 100277
 MAX_SIZE = 4_000_000_000
+DEFAULT_CHUNK_SIZE = 64 * 1024 * 1024
 
 
 def parse_args() -> argparse.Namespace:
@@ -42,6 +43,12 @@ def parse_args() -> argparse.Namespace:
         "--tokenizer", default=DEFAULT_TOKENIZER, help=f"HF tokenizer (default: {DEFAULT_TOKENIZER})."
     )
     parser.add_argument("--processes", type=int, default=os.cpu_count() or 1)
+    parser.add_argument(
+        "--chunk-size",
+        type=int,
+        default=DEFAULT_CHUNK_SIZE,
+        help="Maximum bytes per prepared JSONL shard (default: 64 MiB).",
+    )
     parser.add_argument("--max-size", type=int, default=MAX_SIZE)
     parser.add_argument(
         "--prepare-only",
@@ -65,14 +72,31 @@ def make_document(record: dict[str, Any], fields: list[str], separator: str) -> 
     return {"id": identifier, "text": separator.join(values), "source": "state-bench"}
 
 
-def prepare_document(source: Path, destination: Path, fields: list[str], separator: str) -> int:
-    """Convert one rendered JSONL split into one Dolma JSONL document file."""
+def prepare_document(
+    source: Path,
+    destination_dir: Path,
+    fields: list[str],
+    separator: str,
+    chunk_size: int,
+) -> tuple[int, int]:
+    """Convert one rendered split into document-preserving JSONL shards."""
     count = 0
     pending_bytes = 0
-    destination.parent.mkdir(parents=True, exist_ok=True)
+    chunk_count = 0
+    chunk_bytes = 0
+    output_file = None
+    destination_dir.mkdir(parents=True, exist_ok=True)
+
+    def open_chunk() -> None:
+        nonlocal chunk_bytes, chunk_count, output_file
+        if output_file is not None:
+            output_file.close()
+        output_file = (destination_dir / f"part-{chunk_count:05d}.jsonl").open("wb")
+        chunk_count += 1
+        chunk_bytes = 0
+
     with (
         source.open("rb") as input_file,
-        destination.open("w", encoding="utf-8") as output_file,
         tqdm(
             total=source.stat().st_size,
             desc=f"Preparing {source.parent.name}/{source.name}",
@@ -91,13 +115,21 @@ def prepare_document(source: Path, destination: Path, fields: list[str], separat
                 document = make_document(record, fields, separator)
             except (json.JSONDecodeError, ValueError) as error:
                 raise ValueError(f"{source}:{line_number}: {error}") from error
-            output_file.write(json.dumps(document, ensure_ascii=False, separators=(",", ":")) + "\n")
+            encoded_document = (
+                json.dumps(document, ensure_ascii=False, separators=(",", ":")) + "\n"
+            ).encode()
+            if output_file is None or (chunk_bytes and chunk_bytes + len(encoded_document) > chunk_size):
+                open_chunk()
+            output_file.write(encoded_document)
+            chunk_bytes += len(encoded_document)
             count += 1
             if line_number % 10_000 == 0:
                 progress.update(pending_bytes)
                 pending_bytes = 0
         progress.update(pending_bytes)
-    return count
+    if output_file is not None:
+        output_file.close()
+    return count, chunk_count
 
 
 def split_sort_key(dataset: Path, source: Path) -> tuple[int, str]:
@@ -106,10 +138,10 @@ def split_sort_key(dataset: Path, source: Path) -> tuple[int, str]:
     return (0 if source.stem == "train" else 1, relative.as_posix())
 
 
-def remove_prepared_document(document_path: Path, documents_dir: Path) -> None:
-    """Remove a tokenized intermediate file and its empty parent directories."""
-    document_path.unlink()
-    parent = document_path.parent
+def remove_prepared_documents(document_dir: Path, documents_dir: Path) -> None:
+    """Remove tokenized intermediate shards and their empty parent directories."""
+    shutil.rmtree(document_dir)
+    parent = document_dir.parent
     while parent != documents_dir:
         try:
             parent.rmdir()
@@ -131,6 +163,8 @@ def main() -> int:
     fields = [field.strip() for field in args.text_fields.split(",") if field.strip()]
     if not fields:
         raise SystemExit("--text-fields must contain at least one field")
+    if args.chunk_size <= 0:
+        raise SystemExit("--chunk-size must be positive")
 
     documents_dir = destination / "documents"
     source_files = sorted(
@@ -146,9 +180,14 @@ def main() -> int:
             for source_path in source_files:
                 relative_path = source_path.relative_to(dataset)
                 print(f"Preparing {relative_path}", flush=True)
-                document_count += prepare_document(
-                    source_path, documents_dir / relative_path, fields, args.separator
+                prepared_count, _ = prepare_document(
+                    source_path,
+                    documents_dir / relative_path.parent / relative_path.stem,
+                    fields,
+                    args.separator,
+                    args.chunk_size,
                 )
+                document_count += prepared_count
             print(f"Prepared {document_count:,} Dolma documents in {documents_dir}")
             return 0
 
@@ -166,19 +205,22 @@ def main() -> int:
             raise RuntimeError(f"{args.tokenizer} does not provide a tokenizer.json file")
         for index, source_path in enumerate(source_files, start=1):
             relative_path = source_path.relative_to(dataset)
-            document_path = documents_dir / relative_path
+            document_dir = documents_dir / relative_path.parent / relative_path.stem
             split_destination = destination / "tokens" / relative_path.parent / relative_path.stem
             print(f"Preparing {relative_path} ({index}/{len(source_files)})", flush=True)
-            document_count = prepare_document(source_path, document_path, fields, args.separator)
+            document_count, chunk_count = prepare_document(
+                source_path, document_dir, fields, args.separator, args.chunk_size
+            )
             print(
-                f"Prepared {document_count:,} documents for {relative_path} ({index}/{len(source_files)})",
+                f"Prepared {document_count:,} documents in {chunk_count:,} shards for {relative_path} "
+                f"({index}/{len(source_files)})",
                 flush=True,
             )
             command = [
                 "dolma",
                 "tokens",
                 "--documents",
-                str(document_path),
+                str(document_dir / "*.jsonl"),
                 "--destination",
                 str(split_destination),
                 "--tokenizer.name_or_path",
@@ -202,7 +244,7 @@ def main() -> int:
                 flush=True,
             )
             subprocess.run(command, check=True)
-            remove_prepared_document(document_path, documents_dir)
+            remove_prepared_documents(document_dir, documents_dir)
     except BaseException:
         # Do not leave a partial output that a subsequent run mistakes for success.
         shutil.rmtree(destination, ignore_errors=True)
