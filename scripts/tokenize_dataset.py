@@ -140,7 +140,14 @@ def main() -> int:
 
         tokenizer_dir = destination / "tokenizer"
         print(f"Downloading tokenizer {args.tokenizer}", flush=True)
-        snapshot_download(repo_id=args.tokenizer, local_dir=tokenizer_dir)
+        snapshot_download(
+            repo_id=args.tokenizer,
+            local_dir=tokenizer_dir,
+            allow_patterns=["tokenizer.json"],
+        )
+        tokenizer_path = tokenizer_dir / "tokenizer.json"
+        if not tokenizer_path.is_file():
+            raise RuntimeError(f"{args.tokenizer} does not provide a tokenizer.json file")
         for index, source_path in enumerate(source_files, start=1):
             relative_path = source_path.relative_to(dataset)
             document_path = documents_dir / relative_path
@@ -159,7 +166,7 @@ def main() -> int:
                 "--destination",
                 str(split_destination),
                 "--tokenizer.name_or_path",
-                str(tokenizer_dir / "tokenizer.json"),
+                str(tokenizer_path),
                 "--tokenizer.eos_token_id",
                 str(EOS_TOKEN_ID),
                 "--tokenizer.pad_token_id",

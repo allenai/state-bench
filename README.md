@@ -47,6 +47,8 @@ The command creates `data/state-tracking-long-context-v1/rendered-tokenized/`.
 It converts each rendered record's `prefix` and `completion` into a Dolma
 `text` document, then uses the settings from [the OLMo cookbook tokenization
 guide](https://github.com/allenai/olmo-cookbook/blob/main/docs/how-to-tokenize.md).
+Only the tokenizer's `tokenizer.json` is downloaded; model weights are not
+needed for tokenization.
 Each rendered dataset/split is tokenized independently; for example, training
 tokens for `integer-code--periodic` are written under
 `rendered-tokenized/tokens/integer-code--periodic/train/`.
