@@ -63,31 +63,43 @@ def make_document(record: dict[str, Any], fields: list[str], separator: str) -> 
     return {"id": identifier, "text": separator.join(values), "source": "state-bench"}
 
 
-def prepare_documents(dataset: Path, documents_dir: Path, fields: list[str], separator: str) -> int:
-    jsonl_files = sorted(path for path in dataset.rglob("*.jsonl") if path.is_file())
-    if not jsonl_files:
-        raise ValueError(f"no JSONL files found under {dataset}")
-
+def prepare_document(source: Path, destination: Path, fields: list[str], separator: str) -> int:
+    """Convert one rendered JSONL split into one Dolma JSONL document file."""
     count = 0
-    for source in jsonl_files:
-        relative = source.relative_to(dataset)
-        destination = documents_dir / relative
-        destination.parent.mkdir(parents=True, exist_ok=True)
-        with (
-            source.open(encoding="utf-8") as input_file,
-            destination.open("w", encoding="utf-8") as output_file,
-        ):
-            for line_number, line in enumerate(input_file, start=1):
-                if not line.strip():
-                    continue
-                try:
-                    record = json.loads(line)
-                    document = make_document(record, fields, separator)
-                except (json.JSONDecodeError, ValueError) as error:
-                    raise ValueError(f"{source}:{line_number}: {error}") from error
-                output_file.write(json.dumps(document, ensure_ascii=False, separators=(",", ":")) + "\n")
-                count += 1
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    with (
+        source.open(encoding="utf-8") as input_file,
+        destination.open("w", encoding="utf-8") as output_file,
+    ):
+        for line_number, line in enumerate(input_file, start=1):
+            if not line.strip():
+                continue
+            try:
+                record = json.loads(line)
+                document = make_document(record, fields, separator)
+            except (json.JSONDecodeError, ValueError) as error:
+                raise ValueError(f"{source}:{line_number}: {error}") from error
+            output_file.write(json.dumps(document, ensure_ascii=False, separators=(",", ":")) + "\n")
+            count += 1
     return count
+
+
+def split_sort_key(dataset: Path, source: Path) -> tuple[int, str]:
+    """Order all train splits before every non-train split."""
+    relative = source.relative_to(dataset)
+    return (0 if source.stem == "train" else 1, relative.as_posix())
+
+
+def remove_prepared_document(document_path: Path, documents_dir: Path) -> None:
+    """Remove a tokenized intermediate file and its empty parent directories."""
+    document_path.unlink()
+    parent = document_path.parent
+    while parent != documents_dir:
+        try:
+            parent.rmdir()
+        except OSError:
+            break
+        parent = parent.parent
 
 
 def main() -> int:
@@ -105,21 +117,40 @@ def main() -> int:
         raise SystemExit("--text-fields must contain at least one field")
 
     documents_dir = destination / "documents"
+    source_files = sorted(
+        (path for path in dataset.rglob("*.jsonl") if path.is_file()),
+        key=lambda path: split_sort_key(dataset, path),
+    )
+    if not source_files:
+        raise SystemExit(f"no JSONL files found under {dataset}")
     destination.mkdir(parents=True)
     try:
-        document_count = prepare_documents(dataset, documents_dir, fields, args.separator)
-        print(f"Prepared {document_count:,} Dolma documents in {documents_dir}")
         if args.prepare_only:
+            document_count = 0
+            for source_path in source_files:
+                relative_path = source_path.relative_to(dataset)
+                print(f"Preparing {relative_path}", flush=True)
+                document_count += prepare_document(
+                    source_path, documents_dir / relative_path, fields, args.separator
+                )
+            print(f"Prepared {document_count:,} Dolma documents in {documents_dir}")
             return 0
 
         from huggingface_hub import snapshot_download
 
         tokenizer_dir = destination / "tokenizer"
+        print(f"Downloading tokenizer {args.tokenizer}", flush=True)
         snapshot_download(repo_id=args.tokenizer, local_dir=tokenizer_dir)
-        document_files = sorted(path for path in documents_dir.rglob("*.jsonl") if path.is_file())
-        for index, document_path in enumerate(document_files, start=1):
-            relative_path = document_path.relative_to(documents_dir)
+        for index, source_path in enumerate(source_files, start=1):
+            relative_path = source_path.relative_to(dataset)
+            document_path = documents_dir / relative_path
             split_destination = destination / "tokens" / relative_path.parent / relative_path.stem
+            print(f"Preparing {relative_path} ({index}/{len(source_files)})", flush=True)
+            document_count = prepare_document(source_path, document_path, fields, args.separator)
+            print(
+                f"Prepared {document_count:,} documents for {relative_path} ({index}/{len(source_files)})",
+                flush=True,
+            )
             command = [
                 "dolma",
                 "tokens",
@@ -144,10 +175,11 @@ def main() -> int:
                 "uint32",
             ]
             print(
-                f"Tokenizing {relative_path} ({index}/{len(document_files)}) into {split_destination}",
+                f"Tokenizing {relative_path} ({index}/{len(source_files)}) into {split_destination}",
                 flush=True,
             )
             subprocess.run(command, check=True)
+            remove_prepared_document(document_path, documents_dir)
     except BaseException:
         # Do not leave a partial output that a subsequent run mistakes for success.
         shutil.rmtree(destination, ignore_errors=True)
