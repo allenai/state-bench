@@ -215,7 +215,7 @@ def test_build_defaults_to_cpus_minus_one(monkeypatch: pytest.MonkeyPatch, tmp_p
 
 def test_available_cpu_count_falls_back_on_python_before_313(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delattr("state_bench.io.os.process_cpu_count", raising=False)
-    monkeypatch.setattr("state_bench.io.os.cpu_count", lambda: 3)
+    monkeypatch.setattr("state_bench.io.os.sched_getaffinity", lambda _: {1, 3, 7}, raising=False)
 
     assert benchmark_io._available_cpu_count() == 3
 

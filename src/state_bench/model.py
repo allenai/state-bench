@@ -78,7 +78,15 @@ class StateTrackingInstance:
         digest = hashlib.sha256(
             json.dumps(semantic_record, sort_keys=True, separators=(",", ":")).encode()
         ).hexdigest()[:20]
-        return cls(instance_id=digest, **semantic_record_from_dict(semantic_record))
+        return cls(
+            instance_id=digest,
+            complexity=complexity,
+            num_variables=num_variables,
+            num_values=num_values,
+            operations=operations,
+            query=query,
+            final_state=final_state,
+        )
 
     @classmethod
     def from_record(cls, record: dict[str, Any]) -> StateTrackingInstance:

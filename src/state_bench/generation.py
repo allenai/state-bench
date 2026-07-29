@@ -13,7 +13,6 @@ from state_bench.model import (
     QueryMode,
     StateTrackingInstance,
 )
-from state_bench.semantics import evaluate
 
 
 def generate_instance(
@@ -84,23 +83,29 @@ def generate_periodic_source(
     operations: list[Operation] = [
         AssignConstant(target=variable, value=initial_values[variable]) for variable in variable_order
     ]
-    state = list(evaluate(num_variables=num_variables, num_values=num_values, operations=operations))
+    state = list(initial_values)
     dependency_depths = [0] * num_variables
     target_periodic_diversity = len(set(state))
 
     extra_count = rng.randint(min_extra_assignments, max_extra_assignments)
     remaining_count = extra_count
     if require_strict_witness:
-        copy_candidates = _periodic_copy_candidates(
+        witness = _choose_periodic_copy(
             state=state,
             desired_diversity=target_periodic_diversity,
-        )
-        diversity_preserving = [candidate for candidate in copy_candidates if candidate[2]]
-        witness = _choose_dependency_biased_copy(
-            diversity_preserving or copy_candidates,
             dependency_depths=dependency_depths,
+            exact=True,
             rng=rng,
         )
+        if witness is None:
+            witness = _choose_periodic_copy(
+                state=state,
+                desired_diversity=target_periodic_diversity,
+                dependency_depths=dependency_depths,
+                exact=None,
+                rng=rng,
+            )
+        assert witness is not None
         operations.append(witness)
         _apply(witness, state)
         _apply_dependency(witness, dependency_depths)
@@ -120,7 +125,6 @@ def generate_periodic_source(
         _apply(operation, state)
         _apply_dependency(operation, dependency_depths)
 
-    final_state = evaluate(num_variables=num_variables, num_values=num_values, operations=operations)
     query = _choose_query(num_variables=num_variables, query_mode=query_mode, rng=rng)
     return StateTrackingInstance.create(
         complexity=Complexity.PERIODIC,
@@ -128,7 +132,7 @@ def generate_periodic_source(
         num_values=num_values,
         operations=tuple(operations),
         query=query,
-        final_state=final_state,
+        final_state=tuple(state),
     )
 
 
@@ -175,18 +179,71 @@ def derive_instance(
         source_state[operation.target] = source_value
 
     operation_tuple = tuple(operations)
+    if complexity is Complexity.APERIODIC:
+        final_state = source.final_state
+    else:
+        final_state = tuple(value for value in first_values if value is not None)
+        if len(final_state) != source.num_variables:
+            raise ValueError("source trace leaves a variable uninitialized")
     return StateTrackingInstance.create(
         complexity=complexity,
         num_variables=source.num_variables,
         num_values=source.num_values,
         operations=operation_tuple,
         query=source.query,
-        final_state=evaluate(
+        final_state=final_state,
+    )
+
+
+def derive_variants(source: StateTrackingInstance) -> tuple[StateTrackingInstance, ...]:
+    """Derive all families together with one traversal of the periodic trace."""
+
+    if source.complexity is not Complexity.PERIODIC:
+        raise ValueError("derived instances require a periodic source")
+
+    source_state: list[int | None] = [None] * source.num_variables
+    first_values: list[int | None] = [None] * source.num_variables
+    aperiodic_operations: list[Operation] = []
+    r_trivial_operations: list[Operation] = []
+    for operation in source.operations:
+        if isinstance(operation, AssignConstant):
+            source_value = operation.value
+        else:
+            source_value = source_state[operation.source]
+            if source_value is None:
+                raise ValueError(f"source variable {operation.source} is uninitialized")
+
+        aperiodic_operations.append(AssignConstant(target=operation.target, value=source_value))
+        first_value = first_values[operation.target]
+        if first_value is None:
+            first_value = source_value
+            first_values[operation.target] = first_value
+        r_trivial_operations.append(AssignConstant(target=operation.target, value=first_value))
+        source_state[operation.target] = source_value
+
+    r_trivial_state = tuple(value for value in first_values if value is not None)
+    if len(r_trivial_state) != source.num_variables:
+        raise ValueError("source trace leaves a variable uninitialized")
+    derived = {
+        Complexity.R_TRIVIAL: StateTrackingInstance.create(
+            complexity=Complexity.R_TRIVIAL,
             num_variables=source.num_variables,
             num_values=source.num_values,
-            operations=operation_tuple,
+            operations=tuple(r_trivial_operations),
+            query=source.query,
+            final_state=r_trivial_state,
         ),
-    )
+        Complexity.APERIODIC: StateTrackingInstance.create(
+            complexity=Complexity.APERIODIC,
+            num_variables=source.num_variables,
+            num_values=source.num_values,
+            operations=tuple(aperiodic_operations),
+            query=source.query,
+            final_state=source.final_state,
+        ),
+        Complexity.PERIODIC: source,
+    }
+    return tuple(derived[complexity] for complexity in Complexity)
 
 
 def _validate_parameters(
@@ -250,6 +307,100 @@ def _value_aware_periodic_operation(
     preferentially reset shallow variables so deep provenance survives.
     """
 
+    exact_copy = _choose_periodic_copy(
+        state=state,
+        desired_diversity=desired_diversity,
+        dependency_depths=dependency_depths,
+        exact=True,
+        rng=rng,
+        choose=False,
+    )
+    exact_constant = _choose_periodic_constant(
+        state=state,
+        num_values=num_values,
+        desired_diversity=desired_diversity,
+        dependency_depths=dependency_depths,
+        rng=rng,
+        choose=False,
+    )
+    current_diversity = len(set(state))
+
+    if current_diversity != desired_diversity:
+        if exact_constant is not None:
+            chosen = _choose_periodic_constant(
+                state=state,
+                num_values=num_values,
+                desired_diversity=desired_diversity,
+                dependency_depths=dependency_depths,
+                rng=rng,
+            )
+            assert chosen is not None
+            return chosen
+        if exact_copy is not None:
+            chosen = _choose_periodic_copy(
+                state=state,
+                desired_diversity=desired_diversity,
+                dependency_depths=dependency_depths,
+                exact=True,
+                rng=rng,
+            )
+            assert chosen is not None
+            return chosen
+
+    choose_constant = rng.random() < constant_probability
+    if choose_constant and exact_constant is not None:
+        chosen = _choose_periodic_constant(
+            state=state,
+            num_values=num_values,
+            desired_diversity=desired_diversity,
+            dependency_depths=dependency_depths,
+            rng=rng,
+        )
+        assert chosen is not None
+        return chosen
+    if exact_copy is not None:
+        chosen = _choose_periodic_copy(
+            state=state,
+            desired_diversity=desired_diversity,
+            dependency_depths=dependency_depths,
+            exact=True,
+            rng=rng,
+        )
+        assert chosen is not None
+        return chosen
+    any_copy = _choose_periodic_copy(
+        state=state,
+        desired_diversity=desired_diversity,
+        dependency_depths=dependency_depths,
+        exact=None,
+        rng=rng,
+        choose=False,
+    )
+    if any_copy is not None and remaining_after > 0 and not choose_constant:
+        chosen = _choose_periodic_copy(
+            state=state,
+            desired_diversity=desired_diversity,
+            dependency_depths=dependency_depths,
+            exact=None,
+            rng=rng,
+        )
+        assert chosen is not None
+        return chosen
+    if exact_constant is not None:
+        chosen = _choose_periodic_constant(
+            state=state,
+            num_values=num_values,
+            desired_diversity=desired_diversity,
+            dependency_depths=dependency_depths,
+            rng=rng,
+        )
+        assert chosen is not None
+        return chosen
+
+    # Unusual non-strict configurations can begin with only one live value, or
+    # request as many distinct values as the value vocabulary contains. Choose
+    # the operation that gets closest to the target and let subsequent steps
+    # repair the state.
     copy_candidates = _periodic_copy_candidates(
         state=state,
         desired_diversity=desired_diversity,
@@ -263,54 +414,6 @@ def _value_aware_periodic_operation(
         num_values=num_values,
         desired_diversity=desired_diversity,
     )
-    exact_copies = [candidate for candidate in copy_candidates if candidate[2]]
-    exact_constants = [candidate for candidate in constant_candidates if candidate[1]]
-    current_diversity = len(set(state))
-
-    if current_diversity != desired_diversity:
-        if exact_constants:
-            return _choose_dependency_preserving_constant(
-                exact_constants,
-                dependency_depths=dependency_depths,
-                rng=rng,
-            )
-        if exact_copies:
-            return _choose_dependency_biased_copy(
-                exact_copies,
-                dependency_depths=dependency_depths,
-                rng=rng,
-            )
-
-    choose_constant = rng.random() < constant_probability
-    if choose_constant and exact_constants:
-        return _choose_dependency_preserving_constant(
-            exact_constants,
-            dependency_depths=dependency_depths,
-            rng=rng,
-        )
-    if exact_copies:
-        return _choose_dependency_biased_copy(
-            exact_copies,
-            dependency_depths=dependency_depths,
-            rng=rng,
-        )
-    if copy_candidates and remaining_after > 0 and not choose_constant:
-        return _choose_dependency_biased_copy(
-            copy_candidates,
-            dependency_depths=dependency_depths,
-            rng=rng,
-        )
-    if exact_constants:
-        return _choose_dependency_preserving_constant(
-            exact_constants,
-            dependency_depths=dependency_depths,
-            rng=rng,
-        )
-
-    # Unusual non-strict configurations can begin with only one live value, or
-    # request as many distinct values as the value vocabulary contains. Choose
-    # the operation that gets closest to the target and let subsequent steps
-    # repair the state.
     candidates: list[tuple[Operation, int]] = [
         (AssignVariable(target=target, source=source), result_diversity)
         for target, source, _, result_diversity in copy_candidates
@@ -333,6 +436,145 @@ def _value_aware_periodic_operation(
         if abs(result_diversity - desired_diversity) == closest_distance
     ]
     return rng.choice(closest)
+
+
+def _choose_periodic_copy(
+    *,
+    state: list[int],
+    desired_diversity: int,
+    dependency_depths: list[int],
+    exact: bool | None,
+    rng: random.Random,
+    choose: bool = True,
+) -> AssignVariable | None:
+    """Choose a dependency-biased copy without materializing O(n²) candidates."""
+
+    value_counts = Counter(state)
+    current_diversity = len(value_counts)
+    eligible_targets = [
+        target
+        for target, value in enumerate(state)
+        if exact is None
+        or (current_diversity - (value_counts[value] == 1) == desired_diversity) is exact
+    ]
+    if not eligible_targets:
+        return None
+
+    target_values = {state[target] for target in eligible_targets}
+    max_source_depth = max(
+        (
+            dependency_depths[source]
+            for source, value in enumerate(state)
+            if len(target_values) > 1 or value not in target_values
+        ),
+        default=None,
+    )
+    if max_source_depth is None:
+        return None
+    source_counts: Counter[int] = Counter(
+        state[source]
+        for source in range(len(state))
+        if dependency_depths[source] == max_source_depth
+    )
+    total_sources = sum(source_counts.values())
+    eligible_targets = [
+        target
+        for target in eligible_targets
+        if total_sources > source_counts[state[target]]
+    ]
+    if not eligible_targets:
+        return None
+    min_target_depth = min(dependency_depths[target] for target in eligible_targets)
+    eligible_targets = [
+        target for target in eligible_targets if dependency_depths[target] == min_target_depth
+    ]
+    if not choose:
+        target = eligible_targets[0]
+        source = next(
+            source
+            for source, value in enumerate(state)
+            if dependency_depths[source] == max_source_depth and value != state[target]
+        )
+        return AssignVariable(target=target, source=source)
+
+    candidate_count = sum(total_sources - source_counts[state[target]] for target in eligible_targets)
+    selected = rng.randrange(candidate_count)
+    for target in eligible_targets:
+        target_count = total_sources - source_counts[state[target]]
+        if selected >= target_count:
+            selected -= target_count
+            continue
+        for source, value in enumerate(state):
+            if dependency_depths[source] != max_source_depth or value == state[target]:
+                continue
+            if selected == 0:
+                return AssignVariable(target=target, source=source)
+            selected -= 1
+    raise AssertionError("copy candidate selection fell out of range")
+
+
+def _choose_periodic_constant(
+    *,
+    state: list[int],
+    num_values: int,
+    desired_diversity: int,
+    dependency_depths: list[int],
+    rng: random.Random,
+    choose: bool = True,
+) -> AssignConstant | None:
+    """Choose an exact diversity-preserving constant in O(n + num_values)."""
+
+    value_counts = Counter(state)
+    current_diversity = len(value_counts)
+    present_values = set(value_counts)
+    absent_count = num_values - current_diversity
+
+    def candidate_count(target: int) -> int:
+        required_absent = (
+            desired_diversity - current_diversity + (value_counts[state[target]] == 1)
+        )
+        if required_absent == 1:
+            return absent_count
+        if required_absent == 0:
+            return current_diversity - 1
+        return 0
+
+    eligible_targets = [target for target in range(len(state)) if candidate_count(target)]
+    if not eligible_targets:
+        return None
+    min_target_depth = min(dependency_depths[target] for target in eligible_targets)
+    eligible_targets = [
+        target for target in eligible_targets if dependency_depths[target] == min_target_depth
+    ]
+    if not choose:
+        target = eligible_targets[0]
+        required_absent = (
+            desired_diversity - current_diversity + (value_counts[state[target]] == 1)
+        )
+        value = next(
+            value
+            for value in range(num_values)
+            if value != state[target]
+            and ((value not in present_values) == bool(required_absent))
+        )
+        return AssignConstant(target=target, value=value)
+
+    selected = rng.randrange(sum(candidate_count(target) for target in eligible_targets))
+    for target in eligible_targets:
+        count = candidate_count(target)
+        if selected >= count:
+            selected -= count
+            continue
+        required_absent = (
+            desired_diversity - current_diversity + (value_counts[state[target]] == 1)
+        )
+        for value in range(num_values):
+            if value == state[target] or ((value not in present_values) != bool(required_absent)):
+                continue
+            if selected == 0:
+                return AssignConstant(target=target, value=value)
+            selected -= 1
+    raise AssertionError("constant candidate selection fell out of range")
 
 
 def _periodic_copy_candidates(

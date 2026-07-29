@@ -29,7 +29,7 @@ from state_bench.config import (
     split_uses_formatter,
 )
 from state_bench.distractors import generate_incorrect_states
-from state_bench.generation import derive_instance, generate_periodic_source
+from state_bench.generation import derive_variants, generate_periodic_source
 from state_bench.model import Complexity, QueryMode, StateTrackingInstance
 from state_bench.rendering import RenderedExample, render_instance
 from state_bench.scheduling import (
@@ -47,7 +47,12 @@ def _available_cpu_count() -> int | None:
     """Return CPUs available to this process on every supported Python version."""
 
     process_cpu_count = getattr(os, "process_cpu_count", None)
-    return process_cpu_count() if process_cpu_count is not None else os.cpu_count()
+    if process_cpu_count is not None:
+        return process_cpu_count()
+    get_affinity = getattr(os, "sched_getaffinity", None)
+    if get_affinity is not None:
+        return len(get_affinity(0))
+    return os.cpu_count()
 
 
 def _executor_map(
@@ -138,7 +143,7 @@ def _generate_instances(
             periodic_constant_probability=task.periodic_constant_probability,
             rng=random.Random(retry_seed),
         )
-        instances = tuple(derive_instance(source, complexity=complexity) for complexity in Complexity)
+        instances = derive_variants(source)
         if not ({instance.instance_id for instance in instances} & task.excluded_semantics):
             return _GeneratedSample(
                 source_example_id=task.source_example_id,

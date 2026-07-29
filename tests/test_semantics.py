@@ -4,7 +4,7 @@ import random
 
 import pytest
 
-from state_bench.generation import derive_instance, generate_instance
+from state_bench.generation import derive_instance, derive_variants, generate_instance
 from state_bench.model import AssignConstant, AssignVariable, Complexity, StateTrackingInstance
 from state_bench.semantics import dependency_lengths, dependency_summary, evaluate
 
@@ -104,6 +104,38 @@ def test_derived_families_resolve_periodic_references_from_one_source() -> None:
         assert isinstance(operation, AssignConstant)
         first_values.setdefault(operation.target, operation.value)
         assert operation.value == first_values[operation.target]
+
+    assert derive_variants(source) == tuple(
+        derive_instance(source, complexity=complexity) for complexity in Complexity
+    )
+
+
+@pytest.mark.parametrize("seed", range(20))
+def test_batched_derivations_preserve_trace_alignment_and_final_states(seed: int) -> None:
+    periodic = generate_instance(
+        complexity=Complexity.PERIODIC,
+        num_variables=2 + seed % 7,
+        num_values=3 + seed % 9,
+        min_extra_assignments=1,
+        max_extra_assignments=40,
+        rng=random.Random(seed),
+    )
+    variants = derive_variants(periodic)
+
+    assert variants == tuple(
+        derive_instance(periodic, complexity=complexity) for complexity in Complexity
+    )
+    for variant in variants:
+        assert variant.query == periodic.query
+        assert len(variant.operations) == len(periodic.operations)
+        assert tuple(operation.target for operation in variant.operations) == tuple(
+            operation.target for operation in periodic.operations
+        )
+        assert variant.final_state == evaluate(
+            num_variables=variant.num_variables,
+            num_values=variant.num_values,
+            operations=variant.operations,
+        )
 
 
 def test_strict_family_witnesses() -> None:
