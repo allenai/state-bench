@@ -307,6 +307,7 @@ def _value_aware_periodic_operation(
     preferentially reset shallow variables so deep provenance survives.
     """
 
+    value_counts = Counter(state)
     exact_copy = _choose_periodic_copy(
         state=state,
         desired_diversity=desired_diversity,
@@ -314,6 +315,7 @@ def _value_aware_periodic_operation(
         exact=True,
         rng=rng,
         choose=False,
+        value_counts=value_counts,
     )
     exact_constant = _choose_periodic_constant(
         state=state,
@@ -322,8 +324,9 @@ def _value_aware_periodic_operation(
         dependency_depths=dependency_depths,
         rng=rng,
         choose=False,
+        value_counts=value_counts,
     )
-    current_diversity = len(set(state))
+    current_diversity = len(value_counts)
 
     if current_diversity != desired_diversity:
         if exact_constant is not None:
@@ -333,6 +336,7 @@ def _value_aware_periodic_operation(
                 desired_diversity=desired_diversity,
                 dependency_depths=dependency_depths,
                 rng=rng,
+                value_counts=value_counts,
             )
             assert chosen is not None
             return chosen
@@ -343,6 +347,7 @@ def _value_aware_periodic_operation(
                 dependency_depths=dependency_depths,
                 exact=True,
                 rng=rng,
+                value_counts=value_counts,
             )
             assert chosen is not None
             return chosen
@@ -355,6 +360,7 @@ def _value_aware_periodic_operation(
             desired_diversity=desired_diversity,
             dependency_depths=dependency_depths,
             rng=rng,
+            value_counts=value_counts,
         )
         assert chosen is not None
         return chosen
@@ -365,6 +371,7 @@ def _value_aware_periodic_operation(
             dependency_depths=dependency_depths,
             exact=True,
             rng=rng,
+            value_counts=value_counts,
         )
         assert chosen is not None
         return chosen
@@ -375,6 +382,7 @@ def _value_aware_periodic_operation(
         exact=None,
         rng=rng,
         choose=False,
+        value_counts=value_counts,
     )
     if any_copy is not None and remaining_after > 0 and not choose_constant:
         chosen = _choose_periodic_copy(
@@ -383,6 +391,7 @@ def _value_aware_periodic_operation(
             dependency_depths=dependency_depths,
             exact=None,
             rng=rng,
+            value_counts=value_counts,
         )
         assert chosen is not None
         return chosen
@@ -393,6 +402,7 @@ def _value_aware_periodic_operation(
             desired_diversity=desired_diversity,
             dependency_depths=dependency_depths,
             rng=rng,
+            value_counts=value_counts,
         )
         assert chosen is not None
         return chosen
@@ -446,10 +456,12 @@ def _choose_periodic_copy(
     exact: bool | None,
     rng: random.Random,
     choose: bool = True,
+    value_counts: Counter[int] | None = None,
 ) -> AssignVariable | None:
     """Choose a dependency-biased copy without materializing O(n²) candidates."""
 
-    value_counts = Counter(state)
+    if value_counts is None:
+        value_counts = Counter(state)
     current_diversity = len(value_counts)
     eligible_targets = [
         target
@@ -521,10 +533,12 @@ def _choose_periodic_constant(
     dependency_depths: list[int],
     rng: random.Random,
     choose: bool = True,
+    value_counts: Counter[int] | None = None,
 ) -> AssignConstant | None:
     """Choose an exact diversity-preserving constant in O(n + num_values)."""
 
-    value_counts = Counter(state)
+    if value_counts is None:
+        value_counts = Counter(state)
     current_diversity = len(value_counts)
     present_values = set(value_counts)
     absent_count = num_values - current_diversity

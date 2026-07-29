@@ -12,6 +12,7 @@ from state_bench.scheduling import (
     build_assignment_plan,
     build_filler_plan,
     build_stratified_filler_plan,
+    iter_randomized_assignment_plan,
     log_spaced_buckets,
 )
 
@@ -69,6 +70,20 @@ def test_assignment_plan_is_deterministic_and_respects_jitter() -> None:
         assert item.target_extra_assignments is not None
         assert item.min_extra_assignments <= item.target_extra_assignments
         assert item.max_extra_assignments >= item.target_extra_assignments
+
+
+def test_streaming_assignment_plan_is_deterministic_and_preserves_exact_counts() -> None:
+    schedule = _schedule(max=16, min_samples_per_bucket=1)
+    expected_counts = allocate_bucket_counts(schedule, total_samples=1000)
+    first = tuple(
+        iter_randomized_assignment_plan(schedule, total_samples=1000, rng=random.Random(5))
+    )
+    second = tuple(
+        iter_randomized_assignment_plan(schedule, total_samples=1000, rng=random.Random(5))
+    )
+
+    assert first == second
+    assert Counter(item.target_extra_assignments for item in first) == expected_counts
 
 
 def test_too_small_sample_budget_is_rejected() -> None:
@@ -129,6 +144,27 @@ def test_long_context_experiment_config_loads() -> None:
         1_000_000,
         None,
     ]
+
+
+def test_train_profile_experiment_matches_long_context_train_settings() -> None:
+    production = load_experiment(ROOT / "configs/experiments/long-context.yaml").spec
+    profile = load_experiment(
+        ROOT / "configs/experiments/long-context-train-profile.yaml"
+    ).spec
+    production_train = next(
+        condition
+        for condition in production.generation.conditions
+        if condition.splits == ["train"]
+    )
+
+    assert profile.splits["train"].samples_per_condition == (
+        production.splits["train"].samples_per_condition
+    )
+    assert profile.generation.model_copy(update={"conditions": []}) == (
+        production.generation.model_copy(update={"conditions": []})
+    )
+    assert profile.generation.conditions == [production_train]
+    assert profile.output == production.output
 
 
 def test_filler_plan_preserves_budget_and_evenly_covers_axis() -> None:

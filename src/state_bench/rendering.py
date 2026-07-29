@@ -373,17 +373,43 @@ def _substitute(template: str, *, allowed: set[str], **values: str) -> str:
     # Cache the defensive runtime check for programmatically constructed specs.
     _validate_runtime_template(template, tuple(sorted(allowed)))
     try:
-        return Template(template).substitute(values)
-    except (KeyError, ValueError) as error:
+        return "".join(
+            literal + (values[identifier] if identifier is not None else "")
+            for literal, identifier in _template_parts(template)
+        )
+    except KeyError as error:
         raise ValueError(f"invalid template: {template!r}") from error
 
 
 @cache
 def _validate_runtime_template(template: str, allowed: tuple[str, ...]) -> None:
-    identifiers = set(Template(template).get_identifiers())
+    identifiers = {
+        identifier
+        for _, identifier in _template_parts(template)
+        if identifier is not None
+    }
     unknown = identifiers - set(allowed)
     if unknown:
         raise ValueError(f"unknown template placeholders: {sorted(unknown)}")
+
+
+@cache
+def _template_parts(template: str) -> tuple[tuple[str, str | None], ...]:
+    """Parse a ``string.Template`` once for allocation-light substitutions."""
+
+    parts: list[tuple[str, str | None]] = []
+    cursor = 0
+    for match in Template.pattern.finditer(template):
+        literal = template[cursor : match.start()]
+        identifier = match.group("named") or match.group("braced")
+        if match.group("escaped") is not None:
+            literal += "$"
+        elif match.group("invalid") is not None:
+            raise ValueError(f"invalid template: {template!r}")
+        parts.append((literal, identifier))
+        cursor = match.end()
+    parts.append((template[cursor:], None))
+    return tuple(parts)
 
 
 def _validate_capacity(instance: StateTrackingInstance, formatter: FormatterSpec) -> None:

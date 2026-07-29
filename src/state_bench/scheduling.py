@@ -140,6 +140,46 @@ def build_assignment_plan(
     return tuple(plan)
 
 
+def iter_randomized_assignment_plan(
+    spec: LogSpacedAssignmentSchedule,
+    *,
+    total_samples: int,
+    rng: random.Random,
+) -> Iterator[AssignmentPlanItem]:
+    """Yield an exact random multiset permutation using O(bucket-count) memory."""
+
+    buckets = log_spaced_buckets(spec)
+    counts_by_bucket = allocate_bucket_counts(spec, total_samples=total_samples)
+    counts = [counts_by_bucket[bucket] for bucket in buckets]
+
+    # A Fenwick tree selects a uniformly random remaining multiset position in
+    # O(log bucket-count), without expanding millions of repeated plan items.
+    tree = [0] * (len(counts) + 1)
+    for index, count in enumerate(counts, start=1):
+        cursor = index
+        while cursor < len(tree):
+            tree[cursor] += count
+            cursor += cursor & -cursor
+
+    for remaining in range(total_samples, 0, -1):
+        ticket = rng.randrange(remaining)
+        index = 0
+        bit = 1 << (len(counts).bit_length() - 1)
+        while bit:
+            candidate = index + bit
+            if candidate < len(tree) and tree[candidate] <= ticket:
+                index = candidate
+                ticket -= tree[candidate]
+            bit >>= 1
+
+        bucket_index = index
+        yield _bucket_item(spec, buckets[bucket_index])
+        cursor = bucket_index + 1
+        while cursor < len(tree):
+            tree[cursor] -= 1
+            cursor += cursor & -cursor
+
+
 def sample_assignment_plan_item(
     spec: ExtraAssignmentsSpec,
     *,

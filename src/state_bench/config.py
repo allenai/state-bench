@@ -615,44 +615,36 @@ def _template_texts(value: TemplateValue) -> tuple[str, ...]:
 
 
 def _validate_schedule_budgets(experiment: ExperimentSpec) -> None:
-    import random
-
     from state_bench.scheduling import (
         allocate_bucket_counts,
-        build_assignment_plan,
-        build_filler_plan,
-        build_stratified_filler_plan,
     )
 
     for split_name, split in experiment.splits.items():
         for condition in experiment.generation.conditions:
             if not condition_uses_split(condition, split_name):
                 continue
+            bucket_counts: list[int]
             if isinstance(condition.extra_assignments, LogSpacedAssignmentSchedule):
                 try:
-                    allocate_bucket_counts(
-                        condition.extra_assignments,
-                        total_samples=split.samples_per_condition,
+                    bucket_counts = list(
+                        allocate_bucket_counts(
+                            condition.extra_assignments,
+                            total_samples=split.samples_per_condition,
+                        ).values()
                     )
                 except ValueError as error:
                     raise ValueError(f"invalid assignment schedule for split {split_name!r}") from error
-            try:
-                if condition.filler.stratify_by_assignment_bucket:
-                    assignment_plan = build_assignment_plan(
-                        condition.extra_assignments,
-                        total_samples=split.samples_per_condition,
-                        rng=random.Random(0),
-                    )
-                    build_stratified_filler_plan(
-                        condition.filler,
-                        assignment_plan=assignment_plan,
-                        rng=random.Random(0),
-                    )
-                else:
-                    build_filler_plan(
-                        condition.filler,
-                        total_samples=split.samples_per_condition,
-                        rng=random.Random(0),
-                    )
-            except ValueError as error:
-                raise ValueError(f"invalid filler schedule for split {split_name!r}") from error
+            else:
+                bucket_counts = [split.samples_per_condition]
+
+            variant_count = len(filler_variants(condition.filler))
+            budgets = (
+                bucket_counts
+                if condition.filler.stratify_by_assignment_bucket
+                else [split.samples_per_condition]
+            )
+            if any(0 < budget < variant_count for budget in budgets):
+                raise ValueError(
+                    f"invalid filler schedule for split {split_name!r}: "
+                    f"each covered bucket needs at least {variant_count} samples"
+                )

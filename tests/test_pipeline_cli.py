@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import sys
+from collections.abc import Iterator
 from pathlib import Path
 from types import ModuleType
 
@@ -218,6 +219,46 @@ def test_available_cpu_count_falls_back_on_python_before_313(monkeypatch: pytest
     monkeypatch.setattr("state_bench.io.os.sched_getaffinity", lambda _: {1, 3, 7}, raising=False)
 
     assert benchmark_io._available_cpu_count() == 3
+
+
+def test_executor_map_backport_bounds_input_consumption() -> None:
+    consumed: list[int] = []
+
+    class ImmediateFuture:
+        def __init__(self, value: tuple[int, ...]) -> None:
+            self.value = value
+
+        def result(self) -> tuple[int, ...]:
+            return self.value
+
+    class Pre314Executor:
+        def map(self, function: object, items: object, *, chunksize: int) -> object:
+            raise AssertionError("the eager pre-3.14 map must not be called")
+
+        def submit(
+            self,
+            function: object,
+            mapped_function: object,
+            batch: tuple[int, ...],
+        ) -> ImmediateFuture:
+            return ImmediateFuture(function(mapped_function, batch))  # ty: ignore[call-non-callable]
+
+    def items() -> Iterator[int]:
+        for value in range(20):
+            consumed.append(value)
+            yield value
+
+    results = benchmark_io._executor_map(
+        Pre314Executor(),  # ty: ignore[invalid-argument-type]
+        lambda value: value * 2,
+        items(),
+        chunksize=2,
+        buffersize=2,
+    )
+    assert consumed == []
+    assert next(results) == 0
+    assert consumed == [0, 1, 2, 3]
+    assert list(results) == [value * 2 for value in range(1, 20)]
 
 
 def test_minimal_split_skips_distractors_and_dependency_diagnostics(

@@ -217,6 +217,17 @@ uv run state-bench config check configs/experiments/long-context.yaml
 uv run state-bench build configs/experiments/long-context.yaml
 ```
 
+For repeatable performance work, the train-only profiling experiment preserves
+the production train budget and settings without constructing the test split.
+The helper below runs that real build path for a bounded interval, prints the
+CPU hot spots, removes its partial output, and can retain the raw profile:
+
+```bash
+uv run python scripts/profile_generation.py \
+  --seconds 30 \
+  --profile /tmp/state-bench-generation.prof
+```
+
 The preset also configures exact tokenizer-length strata for Hub staging:
 `[0, 100k)`, `[100k, 500k)`, `[500k, 1m)`, and `[1m, infinity)`. Token counts
 are measured for every rendered prompt prefix with the OLMo 3 tokenizer.

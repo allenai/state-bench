@@ -9,8 +9,8 @@ import os
 import random
 import shutil
 import tempfile
-from collections import Counter, defaultdict
-from collections.abc import Mapping
+from collections import Counter, defaultdict, deque
+from collections.abc import Iterator, Mapping
 from concurrent.futures import ProcessPoolExecutor
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -39,8 +39,11 @@ from state_bench.scheduling import (
     build_filler_plan,
     build_stratified_filler_plan,
     iter_balanced_filler_plan,
+    iter_randomized_assignment_plan,
 )
 from state_bench.semantics import dependency_summary
+
+_MINIMAL_SOURCE_CHUNK_SIZE = 1024
 
 
 def _available_cpu_count() -> int | None:
@@ -66,8 +69,49 @@ def _executor_map(
     """Map with bounded submission when the running Python supports it."""
 
     if "buffersize" in inspect.signature(executor.map).parameters:
-        return executor.map(function, items, chunksize=chunksize, buffersize=buffersize)
-    return executor.map(function, items, chunksize=chunksize)
+        map_with_buffer = cast("Any", executor.map)
+        return map_with_buffer(
+            function,
+            items,
+            chunksize=chunksize,
+            buffersize=buffersize,
+        )
+    return _bounded_executor_map(
+        executor,
+        function,
+        items,
+        chunksize=chunksize,
+        buffersize=buffersize,
+    )
+
+
+def _bounded_executor_map(
+    executor: ProcessPoolExecutor,
+    function: Any,
+    items: Any,
+    *,
+    chunksize: int,
+    buffersize: int,
+) -> Iterator[Any]:
+    """Backport bounded ``Executor.map`` behavior for Python before 3.14."""
+
+    batches = iter(batched(items, chunksize))
+    pending = deque()
+    for _ in range(buffersize):
+        batch = next(batches, None)
+        if batch is None:
+            break
+        pending.append(executor.submit(_run_map_batch, function, batch))
+
+    while pending:
+        yield from pending.popleft().result()
+        batch = next(batches, None)
+        if batch is not None:
+            pending.append(executor.submit(_run_map_batch, function, batch))
+
+
+def _run_map_batch(function: Any, batch: tuple[Any, ...]) -> tuple[Any, ...]:
+    return tuple(map(function, batch))
 
 
 @dataclass(frozen=True, slots=True)
@@ -333,6 +377,20 @@ def build_dataset(
                             _assignment_range_item(condition.extra_assignments),
                             split_spec.samples_per_condition,
                         )
+                    elif split_spec.samples_per_condition >= 100_000:
+                        assignment_plan = iter_randomized_assignment_plan(
+                            condition.extra_assignments,
+                            total_samples=split_spec.samples_per_condition,
+                            rng=random.Random(
+                                derive_seed(
+                                    spec.dataset.seed,
+                                    "assignment-plan",
+                                    split_name,
+                                    str(condition_index),
+                                    str(num_variables),
+                                )
+                            ),
+                        )
                     else:
                         assignment_plan = build_assignment_plan(
                             condition.extra_assignments,
@@ -359,8 +417,7 @@ def build_dataset(
                     if condition.filler.stratify_by_assignment_bucket:
                         # Stratification needs bucket membership, which is
                         # currently represented by the finite assignment plan.
-                        if not isinstance(assignment_plan, tuple):
-                            assignment_plan = tuple(assignment_plan)
+                        assignment_plan = tuple(assignment_plan)
                         filler_plan = build_stratified_filler_plan(
                             condition.filler,
                             assignment_plan=assignment_plan,
@@ -435,7 +492,7 @@ def build_dataset(
                                 chunk_dir=chunk_root,
                             )
                                 for chunk_index, sample_batch in enumerate(
-                                    batched(tasks, 4096)
+                                    batched(tasks, _MINIMAL_SOURCE_CHUNK_SIZE)
                                 )
                         )
                         chunk_results = _executor_map(
@@ -597,7 +654,10 @@ def build_dataset(
     finally:
         progress.close()
         if executor is not None:
-            executor.shutdown()
+            if "cancel_futures" in inspect.signature(executor.shutdown).parameters:
+                executor.shutdown(cancel_futures=True)
+            else:
+                executor.shutdown()
         for handle in (*canonical_handles.values(), *rendered_handles.values()):
             handle.close()
         if chunk_root is not None:
