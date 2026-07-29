@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import inspect
 import json
 import os
 import random
@@ -40,6 +41,28 @@ from state_bench.scheduling import (
     iter_balanced_filler_plan,
 )
 from state_bench.semantics import dependency_summary
+
+
+def _available_cpu_count() -> int | None:
+    """Return CPUs available to this process on every supported Python version."""
+
+    process_cpu_count = getattr(os, "process_cpu_count", None)
+    return process_cpu_count() if process_cpu_count is not None else os.cpu_count()
+
+
+def _executor_map(
+    executor: ProcessPoolExecutor,
+    function: Any,
+    items: Any,
+    *,
+    chunksize: int,
+    buffersize: int,
+) -> Any:
+    """Map with bounded submission when the running Python supports it."""
+
+    if "buffersize" in inspect.signature(executor.map).parameters:
+        return executor.map(function, items, chunksize=chunksize, buffersize=buffersize)
+    return executor.map(function, items, chunksize=chunksize)
 
 
 @dataclass(frozen=True, slots=True)
@@ -199,7 +222,7 @@ def build_dataset(
 
     spec = loaded.spec
     auto_workers = workers is None
-    workers = max(1, (os.process_cpu_count() or 1) - 1) if auto_workers else workers
+    workers = max(1, (_available_cpu_count() or 1) - 1) if auto_workers else workers
     if workers < 1:
         raise ValueError("workers must be positive")
     root = output_dir or _resolve_relative(loaded.path.parent, spec.dataset.output_dir)
@@ -406,11 +429,12 @@ def build_dataset(
                                 config_naming=spec.huggingface.config_naming,
                                 chunk_dir=chunk_root,
                             )
-                            for chunk_index, sample_batch in enumerate(
-                                batched(tasks, 4096, strict=False)
-                            )
+                                for chunk_index, sample_batch in enumerate(
+                                    batched(tasks, 4096)
+                                )
                         )
-                        chunk_results = executor.map(
+                        chunk_results = _executor_map(
+                            executor,
                             _write_minimal_chunk,
                             chunk_tasks,
                             chunksize=1,
@@ -428,7 +452,8 @@ def build_dataset(
                             progress.update(len(Complexity) * result.source_count)
                         continue
                     generated_samples = (
-                        executor.map(
+                        _executor_map(
+                            executor,
                             _generate_instances,
                             tasks,
                             chunksize=256,

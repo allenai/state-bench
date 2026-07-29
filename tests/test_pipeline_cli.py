@@ -8,6 +8,7 @@ from types import ModuleType
 import pytest
 import yaml
 
+from state_bench import io as benchmark_io
 from state_bench.cli import _default_repo_dir, main
 from state_bench.config import TokenStratificationSpec, load_experiment
 from state_bench.hub import (
@@ -186,7 +187,7 @@ def test_parallel_generation_preserves_rendered_bytes(tmp_path: Path) -> None:
 
 def test_build_defaults_to_cpus_minus_one(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     experiment = _small_experiment(tmp_path)
-    monkeypatch.setattr("state_bench.io.os.process_cpu_count", lambda: 5)
+    monkeypatch.setattr("state_bench.io._available_cpu_count", lambda: 5)
     created_workers: list[int] = []
 
     class RecordingExecutor:
@@ -210,6 +211,13 @@ def test_build_defaults_to_cpus_minus_one(monkeypatch: pytest.MonkeyPatch, tmp_p
     monkeypatch.setattr("state_bench.io.ProcessPoolExecutor", RecordingExecutor)
     build_dataset(load_experiment(experiment))
     assert created_workers == [4]
+
+
+def test_available_cpu_count_falls_back_on_python_before_313(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delattr("state_bench.io.os.process_cpu_count", raising=False)
+    monkeypatch.setattr("state_bench.io.os.cpu_count", lambda: 3)
+
+    assert benchmark_io._available_cpu_count() == 3
 
 
 def test_minimal_split_skips_distractors_and_dependency_diagnostics(
