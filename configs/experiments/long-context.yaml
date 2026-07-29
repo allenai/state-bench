@@ -15,8 +15,10 @@ splits:
     # target. Every source row produces periodic, aperiodic, and r-trivial rows.
     samples_per_condition: 340
   train:
-    # Training uses only short traces with simple padding. Only integer-code is
-    # rendered, and any source whose semantics occur in test is resampled.
+    # Training covers short-to-medium traces with simple padding. It stops at
+    # 256 extra assignments, leaving the long-context tail test-only. Only
+    # integer-code is rendered, and any source whose semantics occur in test
+    # is resampled.
     samples_per_condition: 15400000
     formatters: [integer-code]
     disjoint_from: [test]
@@ -59,14 +61,22 @@ generation:
         sample_decay: 1.0
         jitter_fraction: 0.0
         min_samples_per_bucket: 20
-    # Training uses short traces with the unpadded baseline and only 25% simple
-    # dot/comment padding.
+    # Training uses a log-spaced short-to-medium sweep with the unpadded
+    # baseline and only 25% simple dot/comment padding. Its ×2 spacing matches
+    # the test sweep, while the 256-assignment cap preserves a test-only tail.
     - complexity: periodic
       splits: [train]
       formatters: [integer-code]
       num_variables: [2, 4, 6]
       num_values: 10
-      extra_assignments: {min: 1, max: 1}
+      extra_assignments:
+        distribution: log-spaced
+        min: 1
+        max: 256
+        growth_factor: 2.0
+        sample_decay: 1.0
+        jitter_fraction: 0.0
+        min_samples_per_bucket: 1
       filler:
         proportions: [0.0, 0.25]
         distraction_levels: [easy]

@@ -180,7 +180,7 @@ coverage of the longest contexts. `jitter_fraction` samples nearby assignment
 counts rather than putting every row at the exact bucket center. Set
 `sample_decay: 1.0` for uniform sampling across the log-spaced target buckets.
 
-The provided long-context experiment separates a short padded source condition
+The provided long-context experiment separates a short-to-medium padded source condition
 from an unpadded assignment-length sweep. The latter uses 340 source samples,
 uniform weights across 17 assignment buckets up to 64,000 assignments, and
 exactly 20 sources at every target assignment length. Both conditions emit all
@@ -190,9 +190,10 @@ tokens; padding conditions cover 0%, 25%, 50%, 75%, and 90% of final prompt
 lines. An additional integer-code test condition applies 25% padding at every
 assignment bucket, stratified across easy, medium, and hard padding. It is
 appended after the original conditions, so existing test rows retain their
-identities and contents. The training split uses only the short-trace condition
-and its simple `easy` padding style at 25%, alongside the unpadded baseline. It
-renders only `integer-code` and is generated disjoint from the unchanged test
+identities and contents. The training split uses a uniform, log-spaced sweep
+from 1 through 256 extra assignments (the same ×2 spacing as test), with its
+simple `easy` padding style at 25% alongside the unpadded baseline. It renders
+only `integer-code` and is generated disjoint from the unchanged test
 semantics. Hub Parquet shards are capped at 50 long rows apiece.
 
 Rows include `source_example_id` and `source_instance_id` so every derived

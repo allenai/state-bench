@@ -100,7 +100,13 @@ def test_long_context_experiment_config_loads() -> None:
     assert set(allocate_bucket_counts(long.extra_assignments, total_samples=340).values()) == {20}
     assert training.splits == ["train"]
     assert training.formatters == ["integer-code"]
-    assert training.extra_assignments.min == training.extra_assignments.max == 1
+    assert isinstance(training.extra_assignments, LogSpacedAssignmentSchedule)
+    assert training.extra_assignments.min == 1
+    assert training.extra_assignments.max == 256
+    assert training.extra_assignments.growth_factor == 2.0
+    assert training.extra_assignments.sample_decay == 1.0
+    assert training.extra_assignments.jitter_fraction == 0.0
+    assert training.extra_assignments.min_samples_per_bucket == 1
     assert training.filler.proportions == [0.0, 0.25]
     assert training.filler.distraction_levels == ["easy"]
     assert padded_long.splits == ["test"]
