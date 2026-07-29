@@ -50,6 +50,10 @@ guide](https://github.com/allenai/olmo-cookbook/blob/main/docs/how-to-tokenize.m
 Each rendered dataset/split is tokenized independently; for example, training
 tokens for `integer-code--periodic` are written under
 `rendered-tokenized/tokens/integer-code--periodic/train/`.
+The tokenization extra uses [jopetty/dolma](https://github.com/jopetty/dolma)
+and Python 3.12. Its older tokenizer stack cannot be installed together with
+the `analysis` or `hub` extras; use a separate `uv sync --extra tokenization`
+environment for tokenization.
 Use `--text-fields prefix` to tokenize prompts only, or `--prepare-only` to
 inspect the generated Dolma documents before tokenization.
 

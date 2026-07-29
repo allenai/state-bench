@@ -3,7 +3,7 @@ name = "state-bench"
 version = "0.1.0"
 description = "Formatter-independent state-tracking benchmark generation"
 readme = "README.md"
-requires-python = ">=3.14"
+requires-python = ">=3.12"
 dependencies = [
     "pydantic>=2.12",
     "pyyaml>=6.0",
@@ -23,7 +23,7 @@ analysis = [
 ]
 tokenization = [
     "dolma>=1.0.8",
-    "huggingface-hub>=1.23.0",
+    "huggingface-hub>=0.23,<1.0",
 ]
 
 [dependency-groups]
@@ -41,6 +41,21 @@ state-bench-token-histogram = "state_bench.token_histogram:main"
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
+
+[tool.uv]
+conflicts = [
+    [
+        { extra = "analysis" },
+        { extra = "tokenization" },
+    ],
+    [
+        { extra = "hub" },
+        { extra = "tokenization" },
+    ],
+]
+
+[tool.uv.sources]
+dolma = { git = "https://github.com/jopetty/dolma" }
 
 [tool.ruff]
 line-length = 110
