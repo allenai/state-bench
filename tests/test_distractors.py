@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 import random
+from collections import Counter
 
 import pytest
 
 from state_bench.distractors import generate_incorrect_states
-from state_bench.model import AssignConstant, Complexity, StateTrackingInstance
+from state_bench.generation import generate_instance
+from state_bench.model import AssignConstant, AssignVariable, Complexity, StateTrackingInstance
 
 
 def _instance(*, num_values: int = 5) -> StateTrackingInstance:
@@ -53,6 +55,53 @@ def test_rejects_more_distractors_than_the_answer_space_supports() -> None:
             num_distractors=4,
             rng=random.Random(0),
         )
+
+
+def test_periodic_distractors_match_initial_value_and_position_cues() -> None:
+    instance = generate_instance(
+        complexity=Complexity.PERIODIC,
+        num_variables=8,
+        num_values=10,
+        min_extra_assignments=64,
+        max_extra_assignments=64,
+        periodic_sampling_method="layered",
+        rng=random.Random(19),
+    )
+    initial = [None] * instance.num_variables
+    for operation in instance.operations[: instance.num_variables]:
+        assert isinstance(operation, AssignConstant)
+        initial[operation.target] = operation.value
+    correct = tuple(instance.final_state[variable] for variable in instance.query)
+    correct_agreement = sum(
+        value == initial[variable]
+        for variable, value in zip(instance.query, correct, strict=True)
+    )
+    last_sources = [None] * instance.num_variables
+    for operation in instance.operations:
+        if isinstance(operation, AssignVariable):
+            last_sources[operation.target] = operation.source
+    one_hop = tuple(
+        initial[last_sources[variable]]
+        if last_sources[variable] is not None
+        else initial[variable]
+        for variable in instance.query
+    )
+    correct_one_hop_agreement = sum(
+        value == predicted for value, predicted in zip(correct, one_hop, strict=True)
+    )
+    states = generate_incorrect_states(instance, num_distractors=4, rng=random.Random(11))
+
+    for state in states:
+        answer = tuple(state[variable] for variable in instance.query)
+        assert set(answer) == set(correct)
+        assert Counter(answer) == Counter(correct)
+        assert sum(
+            value == initial[variable]
+            for variable, value in zip(instance.query, answer, strict=True)
+        ) == correct_agreement
+        assert sum(
+            value == predicted for value, predicted in zip(answer, one_hop, strict=True)
+        ) == correct_one_hop_agreement
 
 
 def _equality_pattern(values: tuple[int, ...]) -> tuple[int, ...]:

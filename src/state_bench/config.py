@@ -109,6 +109,7 @@ class GenerationSpec(StrictModel):
     allow_self_reference: bool = False
     distinct_initial_values: bool = False
     periodic_constant_probability: float = Field(default=0.1, ge=0.0, le=1.0)
+    periodic_sampling_method: Literal["greedy", "layered"] = "greedy"
     conditions: list[ConditionSpec]
 
     @model_validator(mode="after")
@@ -159,6 +160,19 @@ class GenerationSpec(StrictModel):
                     and (num_variables < 2 or condition.num_values < 2)
                 ):
                     raise ValueError("strict periodic conditions need at least two variables and values")
+                if self.periodic_sampling_method == "layered":
+                    if num_variables < 6 or num_variables % 2:
+                        raise ValueError(
+                            "layered periodic sampling requires an even number of variables at least 6"
+                        )
+                    if condition.num_values < num_variables // 2:
+                        raise ValueError(
+                            "layered periodic sampling needs at least one distinct value per bank lane"
+                        )
+                    if condition.extra_assignments.min < num_variables:
+                        raise ValueError(
+                            "layered periodic sampling requires at least one extra assignment per variable"
+                        )
         return self
 
 

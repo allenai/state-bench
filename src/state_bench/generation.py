@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import random
 from collections import Counter
+from typing import Literal
 
 from state_bench.model import (
     AssignConstant,
@@ -13,6 +14,8 @@ from state_bench.model import (
     QueryMode,
     StateTrackingInstance,
 )
+
+PeriodicSamplingMethod = Literal["greedy", "layered"]
 
 
 def generate_instance(
@@ -27,6 +30,7 @@ def generate_instance(
     require_strict_witness: bool = True,
     allow_self_reference: bool = False,
     periodic_constant_probability: float = 0.1,
+    periodic_sampling_method: PeriodicSamplingMethod = "greedy",
     rng: random.Random,
 ) -> StateTrackingInstance:
     """Generate a periodic source trace and return the requested derivation."""
@@ -41,6 +45,7 @@ def generate_instance(
         require_strict_witness=require_strict_witness,
         allow_self_reference=allow_self_reference,
         periodic_constant_probability=periodic_constant_probability,
+        periodic_sampling_method=periodic_sampling_method,
         rng=rng,
     )
     return derive_instance(source, complexity=complexity)
@@ -57,6 +62,7 @@ def generate_periodic_source(
     require_strict_witness: bool = True,
     allow_self_reference: bool = False,
     periodic_constant_probability: float = 0.1,
+    periodic_sampling_method: PeriodicSamplingMethod = "greedy",
     rng: random.Random,
 ) -> StateTrackingInstance:
     """Generate the periodic source-of-truth for a three-family trace set."""
@@ -69,7 +75,18 @@ def generate_periodic_source(
         distinct_initial_values=distinct_initial_values,
         require_strict_witness=require_strict_witness,
         periodic_constant_probability=periodic_constant_probability,
+        periodic_sampling_method=periodic_sampling_method,
     )
+
+    if periodic_sampling_method == "layered":
+        return _generate_layered_periodic_source(
+            num_variables=num_variables,
+            num_values=num_values,
+            min_extra_assignments=min_extra_assignments,
+            max_extra_assignments=max_extra_assignments,
+            query_mode=query_mode,
+            rng=rng,
+        )
 
     initial_values = _initial_values(
         num_variables=num_variables,
@@ -255,6 +272,7 @@ def _validate_parameters(
     distinct_initial_values: bool,
     require_strict_witness: bool,
     periodic_constant_probability: float,
+    periodic_sampling_method: PeriodicSamplingMethod,
 ) -> None:
     if num_variables < 1 or num_values < 1:
         raise ValueError("num_variables and num_values must be positive")
@@ -264,11 +282,118 @@ def _validate_parameters(
         raise ValueError("distinct initial values require num_values >= num_variables")
     if not 0 <= periodic_constant_probability <= 1:
         raise ValueError("periodic constant probability must satisfy 0 <= probability <= 1")
+    if periodic_sampling_method not in {"greedy", "layered"}:
+        raise ValueError(f"unknown periodic sampling method: {periodic_sampling_method!r}")
+    if periodic_sampling_method == "layered":
+        if num_variables < 6 or num_variables % 2:
+            raise ValueError("layered periodic sampling requires an even number of variables at least 6")
+        if num_values < num_variables // 2:
+            raise ValueError("layered periodic sampling needs at least one distinct value per bank lane")
+        if min_extra_assignments < num_variables:
+            raise ValueError(
+                "layered periodic sampling needs at least one copy update per variable "
+                "to remove literal final-state anchors"
+            )
     if require_strict_witness:
         if min_extra_assignments < 1:
             raise ValueError("strict periodic instances require at least one extra assignment")
         if num_variables < 2 or num_values < 2:
             raise ValueError("strict periodic instances require at least two variables and values")
+
+
+def _generate_layered_periodic_source(
+    *,
+    num_variables: int,
+    num_values: int,
+    min_extra_assignments: int,
+    max_extra_assignments: int,
+    query_mode: QueryMode,
+    rng: random.Random,
+) -> StateTrackingInstance:
+    """Generate balanced copy layers with deep dependencies for every variable.
+
+    Variables are split into two equally sized banks. Each half-layer copies a
+    value-changing permutation from the stable source bank into the other bank.
+    Every bank therefore retains one copy of every lane value, while all final
+    variables receive repeated eager-copy updates. This avoids the usual
+    max-depth-only profile in which one long chain coexists with literal final
+    values for the remaining variables.
+    """
+
+    extra_count = rng.randint(min_extra_assignments, max_extra_assignments)
+    bank_size = num_variables // 2
+    for _ in range(10_000):
+        # Logical bank membership is deliberately independent of rendered
+        # variable position. This prevents a fixed prefix/suffix of variables
+        # from becoming a shortcut for the next copy layer.
+        bank_members = list(range(num_variables))
+        rng.shuffle(bank_members)
+        banks = (bank_members[:bank_size], bank_members[bank_size:])
+        lane_values = rng.sample(range(num_values), bank_size)
+        state = [0] * num_variables
+        for variable, value in zip(banks[0], lane_values, strict=True):
+            state[variable] = value
+        for variable, value in zip(banks[1], lane_values, strict=True):
+            state[variable] = value
+        initial_state = tuple(state)
+        variable_order = list(range(num_variables))
+        rng.shuffle(variable_order)
+        operations: list[Operation] = [
+            AssignConstant(target=variable, value=state[variable]) for variable in variable_order
+        ]
+
+        remaining = extra_count
+        while remaining:
+            receiver_bank = rng.randrange(2)
+            sender_bank = 1 - receiver_bank
+            receiver_variables = banks[receiver_bank]
+            sender_variables = banks[sender_bank]
+            lane_permutation = _random_derangement(bank_size, rng)
+            receiver_order = list(range(bank_size))
+            rng.shuffle(receiver_order)
+            first_updates = min(bank_size, remaining)
+            for lane in receiver_order[:first_updates]:
+                source = sender_variables[lane_permutation[lane]]
+                target = receiver_variables[lane]
+                operations.append(AssignVariable(target=target, source=source))
+                state[target] = state[source]
+            remaining -= first_updates
+            if not remaining:
+                break
+
+            # Copy each newly permuted receiver lane back into its paired
+            # sender lane. At a completed round, every final value again occurs
+            # exactly once in each bank, and the two positions in each hidden
+            # pair share an initial value as well as a final value.
+            sender_order = list(range(bank_size))
+            rng.shuffle(sender_order)
+            second_updates = min(bank_size, remaining)
+            for lane in sender_order[:second_updates]:
+                source = receiver_variables[lane]
+                target = sender_variables[lane]
+                operations.append(AssignVariable(target=target, source=source))
+                state[target] = state[source]
+            remaining -= second_updates
+
+        if all(final != literal for final, literal in zip(state, initial_state, strict=True)):
+            query = _choose_query(num_variables=num_variables, query_mode=query_mode, rng=rng)
+            return StateTrackingInstance.create(
+                complexity=Complexity.PERIODIC,
+                num_variables=num_variables,
+                num_values=num_values,
+                operations=tuple(operations),
+                query=query,
+                final_state=tuple(state),
+            )
+    raise RuntimeError("could not avoid last-literal anchors in layered periodic generation")
+
+
+def _random_derangement(size: int, rng: random.Random) -> list[int]:
+    indices = list(range(size))
+    while True:
+        rng.shuffle(indices)
+        if all(index != value for index, value in enumerate(indices)):
+            return indices.copy()
 
 
 def _initial_values(

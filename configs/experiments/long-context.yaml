@@ -138,8 +138,9 @@ huggingface:
   config_naming: "{formatter}--{complexity}"
   data_format: parquet
   staging_workers: 2
-  # Tokenization happens once during Hub staging. Rendered configs are exposed
-  # as independently loadable splits; bounds are half-open [min, max).
+  # Rendered configs are exposed as independently loadable splits. Bounds are
+  # half-open [min, max), centered between adjacent powers of two so a named
+  # 128k split contains prompts concentrated around 128k tokens.
   token_strata:
     tokenizer: allenai/Olmo-3-1025-7B
     # Gigatoken makes exact per-row OLMo-3 lengths practical during staging.
@@ -150,10 +151,17 @@ huggingface:
     batch_size: 64
     max_batch_characters: 16000000
     ranges:
-      - {name: tokens_0_100k, min_tokens: 0, max_tokens: 100000}
-      - {name: tokens_100k_500k, min_tokens: 100000, max_tokens: 500000}
-      - {name: tokens_500k_1m, min_tokens: 500000, max_tokens: 1000000}
-      - {name: tokens_1m_plus, min_tokens: 1000000, max_tokens: null}
+      - {name: tokens_under_2k, min_tokens: 0, max_tokens: 2048}
+      - {name: tokens_4k, min_tokens: 2048, max_tokens: 6144}
+      - {name: tokens_8k, min_tokens: 6144, max_tokens: 12288}
+      - {name: tokens_16k, min_tokens: 12288, max_tokens: 24576}
+      - {name: tokens_32k, min_tokens: 24576, max_tokens: 49152}
+      - {name: tokens_64k, min_tokens: 49152, max_tokens: 98304}
+      - {name: tokens_128k, min_tokens: 98304, max_tokens: 196608}
+      - {name: tokens_256k, min_tokens: 196608, max_tokens: 393216}
+      - {name: tokens_512k, min_tokens: 393216, max_tokens: 786432}
+      - {name: tokens_1m, min_tokens: 786432, max_tokens: 1572864}
+      - {name: tokens_2m_plus, min_tokens: 1572864, max_tokens: null}
   repository:
     repo_id: jacksonp-ai2/state-bench-lc
     private: true

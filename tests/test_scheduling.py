@@ -139,11 +139,19 @@ def test_long_context_experiment_config_loads() -> None:
     assert token_strata.max_batch_characters == 16_000_000
     assert loaded.spec.output.target_shard_bytes == 128_000_000
     assert [item.max_tokens for item in token_strata.ranges] == [
-        100_000,
-        500_000,
-        1_000_000,
+        2_048,
+        6_144,
+        12_288,
+        24_576,
+        49_152,
+        98_304,
+        196_608,
+        393_216,
+        786_432,
+        1_572_864,
         None,
     ]
+    assert next(item for item in token_strata.ranges if item.name == "tokens_128k").min_tokens == 98_304
 
 
 def test_train_profile_experiment_matches_long_context_train_settings() -> None:

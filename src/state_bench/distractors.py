@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import random
-from math import perm
+from collections import Counter
+from itertools import combinations, permutations
+from math import factorial, perm
 
-from state_bench.model import StateTrackingInstance
+from state_bench.model import AssignConstant, AssignVariable, Complexity, StateTrackingInstance
 
 
 def generate_incorrect_states(
@@ -16,34 +18,82 @@ def generate_incorrect_states(
 ) -> tuple[tuple[int, ...], ...]:
     """Return unique wrong states with the correct answer's equality pattern.
 
-    Distractors are injective relabelings of the queried values. Thus two
-    queried variables are equal in every distractor exactly when they are equal
-    in the correct answer. This prevents the shape of an answer (for example,
-    all queried variables sharing one value) from identifying the correct
-    multiple-choice option without reading the trace.
+    Distractors preserve the correct answer's equality pattern, except that
+    periodic distractors preserve its value multiplicities rather than the
+    locations of equal values. They additionally use only correct-answer
+    values and match its agreement with each variable's initial literal and a
+    one-hop reading of each final copy source.
+    These constraints prevent a multiple-choice solver from choosing an option
+    merely because it uses unseen values, resembles the initial state less, or
+    follows only the final copy operation.
     """
 
     if num_distractors < 0:
         raise ValueError("num_distractors must be non-negative")
     correct_answer = tuple(instance.final_state[variable] for variable in instance.query)
     distinct_values = tuple(dict.fromkeys(correct_answer))
-    available = perm(instance.num_values, len(distinct_values)) - 1
+    periodic = instance.complexity is Complexity.PERIODIC
+    cue_matched_periodic = (
+        periodic and _multiset_permutations(correct_answer) - 1 >= num_distractors
+    )
+    available = (
+        _multiset_permutations(correct_answer) - 1
+        if cue_matched_periodic
+        else perm(instance.num_values, len(distinct_values)) - 1
+    )
     if num_distractors > available:
         raise ValueError(
             f"requested {num_distractors} distractors, but only {available} equality-pattern-"
             "preserving wrong answers exist"
         )
 
-    wrong_answers: set[tuple[int, ...]] = set()
-    while len(wrong_answers) < num_distractors:
-        replacement_values = rng.sample(
-            range(instance.num_values),
-            len(distinct_values),
+    initial_values = _initial_values(instance) if cue_matched_periodic else ()
+    correct_initial_agreement = (
+        _initial_agreement(correct_answer, instance.query, initial_values)
+        if cue_matched_periodic
+        else None
+    )
+    one_hop_values = (
+        _last_copy_source_initial_values(instance, initial_values) if cue_matched_periodic else ()
+    )
+    correct_one_hop_agreement = (
+        sum(
+            value == one_hop
+            for value, one_hop in zip(correct_answer, one_hop_values, strict=True)
         )
+        if cue_matched_periodic
+        else None
+    )
+    wrong_answers: set[tuple[int, ...]] = set()
+    if cue_matched_periodic:
+        wrong_answers = _periodic_cue_matched_answers(
+            correct_answer,
+            initial_values=initial_values,
+            query=instance.query,
+            one_hop_values=one_hop_values,
+            initial_agreement=correct_initial_agreement,
+            one_hop_agreement=correct_one_hop_agreement,
+        )
+        if len(wrong_answers) >= num_distractors:
+            chosen_answers = rng.sample(sorted(wrong_answers), num_distractors)
+            wrong_answers = set(chosen_answers)
+        else:
+            # Legacy periodic traces can have too little answer entropy to
+            # balance all cues. Preserve their established generic behavior;
+            # layered evaluation data is constructed to take the branch above.
+            cue_matched_periodic = False
+            wrong_answers.clear()
+    attempts = 0
+    while len(wrong_answers) < num_distractors:
+        attempts += 1
+        if attempts > 100_000:
+            raise ValueError("could not generate enough leakage-matched periodic distractors")
+        replacement_values = rng.sample(range(instance.num_values), len(distinct_values))
         replacements = dict(zip(distinct_values, replacement_values, strict=True))
         candidate = tuple(replacements[value] for value in correct_answer)
-        if candidate != correct_answer:
-            wrong_answers.add(candidate)
+        if candidate == correct_answer:
+            continue
+        wrong_answers.add(candidate)
 
     states = []
     for wrong_answer in sorted(wrong_answers):
@@ -53,3 +103,87 @@ def generate_incorrect_states(
         states.append(tuple(state))
     rng.shuffle(states)
     return tuple(states)
+
+
+def _multiset_permutations(values: tuple[int, ...]) -> int:
+    count = factorial(len(values))
+    for multiplicity in Counter(values).values():
+        count //= factorial(multiplicity)
+    return count
+
+
+def _periodic_cue_matched_answers(
+    correct_answer: tuple[int, ...],
+    *,
+    initial_values: tuple[int, ...],
+    query: tuple[int, ...],
+    one_hop_values: tuple[int, ...],
+    initial_agreement: int | None,
+    one_hop_agreement: int | None,
+) -> set[tuple[int, ...]]:
+    """Find local rearrangements that preserve every audited shallow score."""
+
+    candidates: set[tuple[int, ...]] = set()
+    indices = range(len(correct_answer))
+    for size in (2, 3):
+        for selected in combinations(indices, size):
+            values = tuple(correct_answer[index] for index in selected)
+            for rearrangement in permutations(values):
+                candidate_list = list(correct_answer)
+                for index, value in zip(selected, rearrangement, strict=True):
+                    candidate_list[index] = value
+                candidate = tuple(candidate_list)
+                if candidate == correct_answer:
+                    continue
+                if _initial_agreement(candidate, query, initial_values) != initial_agreement:
+                    continue
+                if sum(
+                    value == one_hop
+                    for value, one_hop in zip(candidate, one_hop_values, strict=True)
+                ) != one_hop_agreement:
+                    continue
+                candidates.add(candidate)
+    return candidates
+
+
+def _initial_values(instance: StateTrackingInstance) -> tuple[int, ...]:
+    """Return the first literal assigned to each variable in a periodic trace."""
+
+    values: list[int | None] = [None] * instance.num_variables
+    for operation in instance.operations:
+        if values[operation.target] is None:
+            if not isinstance(operation, AssignConstant):
+                raise ValueError("periodic distractors require an initial literal for every variable")
+            values[operation.target] = operation.value
+    if any(value is None for value in values):
+        raise ValueError("periodic distractors require every variable to be initialized")
+    return tuple(value for value in values if value is not None)
+
+
+def _initial_agreement(
+    answer: tuple[int, ...],
+    query: tuple[int, ...],
+    initial_values: tuple[int, ...],
+) -> int:
+    return sum(
+        value == initial_values[variable]
+        for variable, value in zip(query, answer, strict=True)
+    )
+
+
+def _last_copy_source_initial_values(
+    instance: StateTrackingInstance,
+    initial_values: tuple[int, ...],
+) -> tuple[int, ...]:
+    """Initial value lookup obtained by inspecting only the final copy into each target."""
+
+    last_sources: list[int | None] = [None] * instance.num_variables
+    for operation in instance.operations:
+        if isinstance(operation, AssignVariable):
+            last_sources[operation.target] = operation.source
+    return tuple(
+        initial_values[last_sources[variable]]
+        if last_sources[variable] is not None
+        else initial_values[variable]
+        for variable in instance.query
+    )

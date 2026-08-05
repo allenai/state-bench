@@ -35,8 +35,10 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--text-fields",
-        default="prefix,completion",
-        help="Comma-separated fields joined into each training document (default: prefix,completion).",
+        help=(
+            "Comma-separated fields joined into each training document. By default, use the "
+            "document-ready id/text/source fields emitted by state-bench builds."
+        ),
     )
     parser.add_argument("--separator", default="\n", help="Text inserted between --text-fields.")
     parser.add_argument(
@@ -58,8 +60,15 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
-def make_document(record: dict[str, Any], fields: list[str], separator: str) -> dict[str, Any]:
+def make_document(record: dict[str, Any], fields: list[str] | None, separator: str) -> dict[str, Any]:
     """Convert a state-bench rendered record to the minimal Dolma document schema."""
+    if fields is None:
+        required = ("id", "text", "source")
+        if all(isinstance(record.get(field), str) for field in required):
+            return record
+        # Continue to support builds made before rendered rows were
+        # document-ready. New builds avoid this conversion entirely.
+        fields = ["prefix", "completion"]
     missing = [field for field in fields if field not in record]
     if missing:
         raise ValueError(f"record is missing requested text field(s): {', '.join(missing)}")
@@ -75,7 +84,7 @@ def make_document(record: dict[str, Any], fields: list[str], separator: str) -> 
 def prepare_document(
     source: Path,
     destination_dir: Path,
-    fields: list[str],
+    fields: list[str] | None,
     separator: str,
     chunk_size: int,
 ) -> tuple[int, int]:
@@ -115,7 +124,9 @@ def prepare_document(
                 document = make_document(record, fields, separator)
             except (json.JSONDecodeError, ValueError) as error:
                 raise ValueError(f"{source}:{line_number}: {error}") from error
-            encoded_document = (
+            # Native state-bench rows already satisfy Dolma's id/text/source
+            # schema, so retain their bytes rather than rewriting JSONL.
+            encoded_document = line if fields is None and document is record else (
                 json.dumps(document, ensure_ascii=False, separators=(",", ":")) + "\n"
             ).encode()
             if output_file is None or (chunk_bytes and chunk_bytes + len(encoded_document) > chunk_size):
@@ -160,8 +171,12 @@ def main() -> int:
         raise SystemExit(
             f"destination already exists: {destination}\nChoose --destination or remove it first."
         )
-    fields = [field.strip() for field in args.text_fields.split(",") if field.strip()]
-    if not fields:
+    fields = (
+        [field.strip() for field in args.text_fields.split(",") if field.strip()]
+        if args.text_fields is not None
+        else None
+    )
+    if fields == []:
         raise SystemExit("--text-fields must contain at least one field")
     if args.chunk_size <= 0:
         raise SystemExit("--chunk-size must be positive")

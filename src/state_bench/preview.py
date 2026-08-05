@@ -232,6 +232,7 @@ def _generate(
         require_strict_witness=generation.require_strict_witness,
         allow_self_reference=generation.allow_self_reference,
         periodic_constant_probability=generation.periodic_constant_probability,
+        periodic_sampling_method=generation.periodic_sampling_method,
         rng=random.Random(seed),
     )
     return derive_instance(source, complexity=complexity)

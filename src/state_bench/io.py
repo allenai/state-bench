@@ -128,6 +128,7 @@ class _GenerationTask:
     require_strict_witness: bool
     allow_self_reference: bool
     periodic_constant_probability: float
+    periodic_sampling_method: str
     root_seed: int
     excluded_semantics: frozenset[str]
     plan_item: AssignmentPlanItem
@@ -185,6 +186,7 @@ def _generate_instances(
             require_strict_witness=task.require_strict_witness,
             allow_self_reference=task.allow_self_reference,
             periodic_constant_probability=task.periodic_constant_probability,
+            periodic_sampling_method=task.periodic_sampling_method,
             rng=random.Random(retry_seed),
         )
         instances = derive_variants(source)
@@ -460,6 +462,7 @@ def build_dataset(
                             require_strict_witness=spec.generation.require_strict_witness,
                             allow_self_reference=spec.generation.allow_self_reference,
                             periodic_constant_probability=spec.generation.periodic_constant_probability,
+                            periodic_sampling_method=spec.generation.periodic_sampling_method,
                             root_seed=spec.dataset.seed,
                             excluded_semantics=frozen_excluded_semantics,
                             plan_item=plan_item,
@@ -642,6 +645,15 @@ def build_dataset(
                                 ):
                                     assert canonical_record is not None
                                     rendered_record["final_state"] = canonical_record["final_state"]
+                                # Keep the training payload alongside the evaluation metadata so
+                                # raw rendered JSONL is directly consumable by Dolma and HF JSON.
+                                rendered_record.update(
+                                    _document_fields(
+                                        example_id=example_id,
+                                        prefix=rendered.prefix,
+                                        completion=rendered.completion,
+                                    )
+                                )
                                 write_json_line(
                                     rendered_handles[(config_name, split_name)], rendered_record
                                 )
@@ -720,7 +732,7 @@ def _minimal_rendered_record(
     source_instance_id: str,
     rendered: RenderedExample,
 ) -> dict[str, str]:
-    return {
+    record = {
         "example_id": example_id,
         "source_example_id": source_example_id,
         "source_instance_id": source_instance_id,
@@ -729,6 +741,24 @@ def _minimal_rendered_record(
         "complexity": rendered.complexity,
         "prefix": rendered.prefix,
         "completion": rendered.completion,
+    }
+    record.update(
+        _document_fields(
+            example_id=example_id,
+            prefix=rendered.prefix,
+            completion=rendered.completion,
+        )
+    )
+    return record
+
+
+def _document_fields(*, example_id: str, prefix: str, completion: str) -> dict[str, str]:
+    """Return the standard document fields shared by training-data consumers."""
+
+    return {
+        "id": example_id,
+        "text": f"{prefix}\n{completion}",
+        "source": "state-bench",
     }
 
 

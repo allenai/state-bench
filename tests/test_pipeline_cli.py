@@ -290,7 +290,13 @@ def test_minimal_split_skips_distractors_and_dependency_diagnostics(
         "complexity",
         "prefix",
         "completion",
+        "id",
+        "text",
+        "source",
     }
+    assert rows[0]["id"] == rows[0]["example_id"]
+    assert rows[0]["text"] == f"{rows[0]['prefix']}\n{rows[0]['completion']}"
+    assert rows[0]["source"] == "state-bench"
     assert not (output / "canonical/train.jsonl").exists()
 
 

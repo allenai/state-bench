@@ -44,8 +44,9 @@ uv run --extra tokenization python scripts/tokenize_dataset.py data/state-tracki
 ```
 
 The command creates `data/state-tracking-long-context-v1/rendered-tokenized/`.
-It converts each rendered record's `prefix` and `completion` into a Dolma
-`text` document, then uses the settings from [the OLMo cookbook tokenization
+Rendered build rows already include Dolma-compatible `id`, `text`, and `source`
+fields, so tokenization shards the raw records without a JSONL conversion pass,
+then uses the settings from [the OLMo cookbook tokenization
 guide](https://github.com/allenai/olmo-cookbook/blob/main/docs/how-to-tokenize.md).
 Only the tokenizer's `tokenizer.json` is downloaded; model weights are not
 needed for tokenization.
@@ -61,7 +62,9 @@ and Python 3.12. Its older tokenizer stack cannot be installed together with
 the `analysis` or `hub` extras; use a separate `uv sync --extra tokenization`
 environment for tokenization.
 Use `--text-fields prefix` to tokenize prompts only, or `--prepare-only` to
-inspect the generated Dolma documents before tokenization.
+inspect the generated Dolma documents before tokenization. Existing builds
+without the document fields remain supported and fall back to `prefix` plus
+`completion`.
 
 ## Configuration
 
@@ -118,6 +121,12 @@ changing copy necessarily collapses the state temporarily, so the generator
 uses a later constant to restore diversity. Lower constant probabilities
 therefore produce substantially deeper final dependency chains where the
 diversity constraint permits them.
+
+Every rendered row is also a self-contained training document: `id` equals
+`example_id`, `text` is `prefix + "\\n" + completion`, and `source` is
+`state-bench`. This JSONL is directly consumable by Dolma and by Hugging Face's
+JSON dataset loader; the optional Hub staging command only packages it into
+sharded Parquet plus repository metadata.
 
 Paths in an experiment are resolved relative to that experiment file.
 Configuration models are strict and versioned: unknown keys, invalid family
@@ -228,9 +237,11 @@ uv run python scripts/profile_generation.py \
   --profile /tmp/state-bench-generation.prof
 ```
 
-The preset also configures exact tokenizer-length strata for Hub staging:
-`[0, 100k)`, `[100k, 500k)`, `[500k, 1m)`, and `[1m, infinity)`. Token counts
-are measured for every rendered prompt prefix with the OLMo 3 tokenizer.
+The preset also configures exact tokenizer-length strata for Hub staging around
+successive powers of two. For example, `tokens_128k` is `[96k, 192k)` and
+`tokens_512k` is `[384k, 768k)`, so each named band is concentrated near its
+target context length. Token counts are measured for every rendered prompt
+prefix with the OLMo 3 tokenizer.
 Gigatoken accelerates the exact tokenization path while preserving Hugging
 Face tokenizer outputs. Stage this preset with both optional dependency groups
 because exact tokenization requires the tokenizer as well as Parquet support:
@@ -244,8 +255,8 @@ With this config, the source `data/state-tracking-long-context-v1` directory is
 staged to `build/state-tracking-long-context-v1` by default.
 
 Rendered configs then expose independently loadable, nonempty splits such as
-`test__tokens_0_100k`, `test__tokens_100k_500k`, `test__tokens_500k_1m`, and
-`test__tokens_1m_plus`. Every staged row includes `token_length` and
+`test__tokens_64k`, `test__tokens_128k`, `test__tokens_512k`, and
+`test__tokens_1m`. Every staged row includes `token_length` and
 `token_stratum`, with `token_length_is_estimate: false`; the canonical config
 retains the base `test` split. Empty ranges are omitted per rendered config;
 consumers should discover available split names instead of assuming that every
@@ -564,7 +575,7 @@ For a token-stratified long-context config, select only the desired cost tier:
 short_test = load_dataset(
     "organization/state-bench",
     "integer-code--periodic",
-    split="test__tokens_0_100k",
+    split="test__tokens_128k",
 )
 ```
 

@@ -225,6 +225,55 @@ def test_periodic_generation_uses_value_changing_updates_and_live_lineages() -> 
     ) >= 400
 
 
+@pytest.mark.parametrize("num_variables", (8, 16))
+def test_layered_periodic_generation_makes_every_final_variable_deep(
+    num_variables: int,
+) -> None:
+    periodic = generate_instance(
+        complexity=Complexity.PERIODIC,
+        num_variables=num_variables,
+        num_values=10,
+        min_extra_assignments=4 * num_variables,
+        max_extra_assignments=4 * num_variables,
+        periodic_sampling_method="layered",
+        rng=random.Random(37),
+    )
+    initial_state = evaluate(
+        num_variables=periodic.num_variables,
+        num_values=periodic.num_values,
+        operations=periodic.operations[:num_variables],
+    )
+    lengths = dependency_lengths(num_variables=num_variables, operations=periodic.operations)
+
+    assert all(isinstance(operation, AssignVariable) for operation in periodic.operations[num_variables:])
+    assert min(lengths) >= 3
+    assert max(lengths) - min(lengths) <= 1
+    assert len(set(periodic.final_state)) == num_variables // 2
+    # Every coordinate has moved away from its only literal assignment, so a
+    # last-literal baseline has no correct coordinate to anchor on.
+    assert all(
+        final != literal for final, literal in zip(periodic.final_state, initial_state, strict=True)
+    )
+
+
+def test_layered_periodic_generation_randomizes_physical_bank_roles_and_order() -> None:
+    groups = []
+    for seed in range(8):
+        periodic = generate_instance(
+            complexity=Complexity.PERIODIC,
+            num_variables=8,
+            num_values=10,
+            min_extra_assignments=8,
+            max_extra_assignments=8,
+            periodic_sampling_method="layered",
+            rng=random.Random(seed),
+        )
+        groups.append(tuple(operation.target for operation in periodic.operations[8:12]))
+
+    assert len(set(groups)) > 1
+    assert all(group != tuple(range(4)) and group != tuple(range(4, 8)) for group in groups)
+
+
 def test_two_variable_periodic_generation_repairs_copy_collapse() -> None:
     periodic = generate_instance(
         complexity=Complexity.PERIODIC,
