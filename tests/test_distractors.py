@@ -5,7 +5,7 @@ from collections import Counter
 
 import pytest
 
-from state_bench.distractors import generate_incorrect_states
+from state_bench.distractors import _choose_depth_weighted_answers, generate_incorrect_states
 from state_bench.generation import generate_instance
 from state_bench.model import AssignConstant, AssignVariable, Complexity, StateTrackingInstance
 
@@ -102,6 +102,25 @@ def test_periodic_distractors_match_initial_value_and_position_cues() -> None:
         assert sum(
             value == predicted for value, predicted in zip(answer, one_hop, strict=True)
         ) == correct_one_hop_agreement
+
+
+def test_depth_weighted_periodic_distractors_prefer_to_move_deep_coordinates() -> None:
+    correct = (0, 1, 2, 3)
+    shallow_move = (1, 0, 2, 3)
+    deep_move = (0, 1, 3, 2)
+    deep_selections = 0
+
+    for seed in range(400):
+        selected = _choose_depth_weighted_answers(
+            {shallow_move, deep_move},
+            correct_answer=correct,
+            queried_depths=(1, 1, 1_000, 1_000),
+            count=1,
+            rng=random.Random(seed),
+        )
+        deep_selections += selected == [deep_move]
+
+    assert deep_selections > 390
 
 
 def _equality_pattern(values: tuple[int, ...]) -> tuple[int, ...]:

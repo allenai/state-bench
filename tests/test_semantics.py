@@ -235,6 +235,7 @@ def test_layered_periodic_generation_makes_every_final_variable_deep(
         num_values=10,
         min_extra_assignments=4 * num_variables,
         max_extra_assignments=4 * num_variables,
+        periodic_constant_probability=0.0,
         periodic_sampling_method="layered",
         rng=random.Random(37),
     )
@@ -265,6 +266,7 @@ def test_layered_periodic_generation_randomizes_physical_bank_roles_and_order() 
             num_values=10,
             min_extra_assignments=8,
             max_extra_assignments=8,
+            periodic_constant_probability=0.0,
             periodic_sampling_method="layered",
             rng=random.Random(seed),
         )
@@ -272,6 +274,32 @@ def test_layered_periodic_generation_randomizes_physical_bank_roles_and_order() 
 
     assert len(set(groups)) > 1
     assert all(group != tuple(range(4)) and group != tuple(range(4, 8)) for group in groups)
+
+
+def test_layered_periodic_generation_can_mix_exactly_twenty_percent_constants() -> None:
+    periodic = generate_instance(
+        complexity=Complexity.PERIODIC,
+        num_variables=8,
+        num_values=10,
+        min_extra_assignments=80,
+        max_extra_assignments=80,
+        periodic_constant_probability=0.2,
+        periodic_sampling_method="layered",
+        rng=random.Random(41),
+    )
+
+    extras = periodic.operations[periodic.num_variables :]
+    assert sum(isinstance(operation, AssignConstant) for operation in extras) == 16
+    assert sum(isinstance(operation, AssignVariable) for operation in extras) == 64
+    last_constant_values: list[int | None] = [None] * periodic.num_variables
+    for operation in extras:
+        if isinstance(operation, AssignConstant):
+            last_constant_values[operation.target] = operation.value
+    assert all(
+        final != literal
+        for final, literal in zip(periodic.final_state, last_constant_values, strict=True)
+        if literal is not None
+    )
 
 
 def test_two_variable_periodic_generation_repairs_copy_collapse() -> None:

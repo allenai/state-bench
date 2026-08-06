@@ -5,9 +5,10 @@ from __future__ import annotations
 import random
 from collections import Counter
 from itertools import combinations, permutations
-from math import factorial, perm
+from math import factorial, log1p, perm
 
 from state_bench.model import AssignConstant, AssignVariable, Complexity, StateTrackingInstance
+from state_bench.semantics import dependency_lengths
 
 
 def generate_incorrect_states(
@@ -75,7 +76,20 @@ def generate_incorrect_states(
             one_hop_agreement=correct_one_hop_agreement,
         )
         if len(wrong_answers) >= num_distractors:
-            chosen_answers = rng.sample(sorted(wrong_answers), num_distractors)
+            final_depths = dependency_lengths(
+                num_variables=instance.num_variables,
+                operations=instance.operations,
+            )
+            queried_depths = tuple(
+                final_depths[variable] for variable in instance.query
+            )
+            chosen_answers = _choose_depth_weighted_answers(
+                wrong_answers,
+                correct_answer=correct_answer,
+                queried_depths=queried_depths,
+                count=num_distractors,
+                rng=rng,
+            )
             wrong_answers = set(chosen_answers)
         else:
             # Legacy periodic traces can have too little answer entropy to
@@ -144,6 +158,54 @@ def _periodic_cue_matched_answers(
                     continue
                 candidates.add(candidate)
     return candidates
+
+
+def _choose_depth_weighted_answers(
+    candidates: set[tuple[int, ...]],
+    *,
+    correct_answer: tuple[int, ...],
+    queried_depths: tuple[int, ...],
+    count: int,
+    rng: random.Random,
+) -> list[tuple[int, ...]]:
+    """Choose alternatives that preferentially move deep queried coordinates.
+
+    A moved coordinate contributes ``log(1 + depth)`` to its candidate's
+    weight. Sampling without replacement from these weights leaves short,
+    locally solvable coordinates unchanged in most alternatives while placing
+    the uncertainty on the long dependency chains.
+    """
+
+    remaining = sorted(candidates)
+    chosen: list[tuple[int, ...]] = []
+    while len(chosen) < count:
+        weights = [
+            _depth_weight(candidate, correct_answer=correct_answer, queried_depths=queried_depths)
+            for candidate in remaining
+        ]
+        selected = rng.choices(remaining, weights=weights, k=1)[0]
+        remaining.remove(selected)
+        chosen.append(selected)
+    return chosen
+
+
+def _depth_weight(
+    candidate: tuple[int, ...],
+    *,
+    correct_answer: tuple[int, ...],
+    queried_depths: tuple[int, ...],
+) -> float:
+    """Return the relative sampling weight for one non-identity alternative."""
+
+    weight = 1.0
+    for candidate_value, correct_value, depth in zip(
+        candidate, correct_answer, queried_depths, strict=True
+    ):
+        if candidate_value != correct_value:
+            # A tiny nonzero floor keeps generation feasible if a legacy trace
+            # exposes only shallow mutable coordinates.
+            weight *= max(log1p(depth), 0.05)
+    return weight
 
 
 def _initial_values(instance: StateTrackingInstance) -> tuple[int, ...]:

@@ -1,14 +1,14 @@
 schema_version: 1
 
 dataset:
-  name: periodic-test
+  name: periodic-test-pure
   seed: 23
-  output_dir: ../../data/periodic-test
+  output_dir: ../../data/periodic-test-pure
 
 splits:
   test:
     # 352 source traces per state width: 704 periodic sources total. This keeps
-    # 32 examples in each of the eleven depth buckets through 10,000 updates.
+    # 32 examples in each of the eleven depth buckets through 64,000 updates.
     samples_per_condition: 352
 
 generation:
@@ -30,8 +30,8 @@ generation:
       num_values: 10
       extra_assignments:
         distribution: log-spaced
-        min: 16
-        max: 10000
+        min: 64
+        max: 64000
         growth_factor: 2.0
         sample_decay: 1.0
         jitter_fraction: 0.0

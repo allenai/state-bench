@@ -84,6 +84,7 @@ def generate_periodic_source(
             num_values=num_values,
             min_extra_assignments=min_extra_assignments,
             max_extra_assignments=max_extra_assignments,
+            periodic_constant_probability=periodic_constant_probability,
             query_mode=query_mode,
             rng=rng,
         )
@@ -307,6 +308,7 @@ def _generate_layered_periodic_source(
     num_values: int,
     min_extra_assignments: int,
     max_extra_assignments: int,
+    periodic_constant_probability: float,
     query_mode: QueryMode,
     rng: random.Random,
 ) -> StateTrackingInstance:
@@ -342,6 +344,7 @@ def _generate_layered_periodic_source(
             AssignConstant(target=variable, value=state[variable]) for variable in variable_order
         ]
 
+        planned_copies: list[AssignVariable] = []
         remaining = extra_count
         while remaining:
             receiver_bank = rng.randrange(2)
@@ -355,8 +358,7 @@ def _generate_layered_periodic_source(
             for lane in receiver_order[:first_updates]:
                 source = sender_variables[lane_permutation[lane]]
                 target = receiver_variables[lane]
-                operations.append(AssignVariable(target=target, source=source))
-                state[target] = state[source]
+                planned_copies.append(AssignVariable(target=target, source=source))
             remaining -= first_updates
             if not remaining:
                 break
@@ -371,11 +373,38 @@ def _generate_layered_periodic_source(
             for lane in sender_order[:second_updates]:
                 source = receiver_variables[lane]
                 target = sender_variables[lane]
-                operations.append(AssignVariable(target=target, source=source))
-                state[target] = state[source]
+                planned_copies.append(AssignVariable(target=target, source=source))
             remaining -= second_updates
 
-        if all(final != literal for final, literal in zip(state, initial_state, strict=True)):
+        constant_indices = _layered_constant_indices(
+            planned_copies,
+            num_variables=num_variables,
+            probability=periodic_constant_probability,
+            rng=rng,
+        )
+        last_constant_values: list[int | None] = [None] * num_variables
+        for index, copy in enumerate(planned_copies):
+            operation: Operation = copy
+            if index in constant_indices:
+                # A reset must change the live value; otherwise it creates an
+                # aperiodic-looking assignment without actually mixing in new
+                # value information.
+                value = rng.randrange(num_values - 1)
+                if value >= state[copy.target]:
+                    value += 1
+                operation = AssignConstant(target=copy.target, value=value)
+                last_constant_values[copy.target] = value
+            operations.append(operation)
+            _apply(operation, state)
+
+        if (
+            all(final != literal for final, literal in zip(state, initial_state, strict=True))
+            and all(
+                final != literal
+                for final, literal in zip(state, last_constant_values, strict=True)
+                if literal is not None
+            )
+        ):
             query = _choose_query(num_variables=num_variables, query_mode=query_mode, rng=rng)
             return StateTrackingInstance.create(
                 complexity=Complexity.PERIODIC,
@@ -386,6 +415,51 @@ def _generate_layered_periodic_source(
                 final_state=tuple(state),
             )
     raise RuntimeError("could not avoid last-literal anchors in layered periodic generation")
+
+
+def _layered_constant_indices(
+    planned_copies: list[AssignVariable],
+    *,
+    num_variables: int,
+    probability: float,
+    rng: random.Random,
+) -> set[int]:
+    """Place reset assignments where their targets have time to recover depth.
+
+    Injections are spread through the early 80% of a trace and, within each
+    segment, prefer targets with the most later copy updates. This retains an
+    exact mixture rate while reserving a copy-only suffix for dependency
+    recovery.
+    """
+
+    count = round(probability * len(planned_copies))
+    if not count:
+        return set()
+    # Spread resets through the leading portion of the trace, leaving a suffix
+    # at least as large as the requested mixture rate for every lineage to
+    # recover through copy-only updates. ``max`` keeps the routine valid for
+    # high probabilities and very short traces.
+    cutoff = max(
+        count,
+        min(
+            int((1 - probability) * len(planned_copies)),
+            len(planned_copies) - num_variables,
+        ),
+    )
+    later_target_updates = [0] * len(planned_copies)
+    target_counts = [0] * num_variables
+    for index in range(len(planned_copies) - 1, -1, -1):
+        target = planned_copies[index].target
+        later_target_updates[index] = target_counts[target]
+        target_counts[target] += 1
+    selected: set[int] = set()
+    for bucket in range(count):
+        start = bucket * cutoff // count
+        end = (bucket + 1) * cutoff // count
+        candidates = [index for index in range(start, end) if index not in selected]
+        best = max(later_target_updates[index] for index in candidates)
+        selected.add(rng.choice([index for index in candidates if later_target_updates[index] == best]))
+    return selected
 
 
 def _random_derangement(size: int, rng: random.Random) -> list[int]:
