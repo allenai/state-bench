@@ -10,9 +10,9 @@ splits:
     # This is a fixed budget for each complexity/variable-count pair. It is
     # distributed across the log-spaced buckets below rather than repeated at
     # every depth. Uniform log-bucket weights provide comparable coverage from
-    # short traces through the roughly one-million-token tail. With 17 target
-    # assignment buckets, 340 periodic source rows gives exactly 20 samples per
-    # target. Every source row produces periodic, aperiodic, and r-trivial rows.
+    # short traces through the roughly one-million-token tail. The 13 target
+    # assignment buckets each receive at least 20 periodic source rows. Every
+    # source row produces periodic, aperiodic, and r-trivial rows.
     samples_per_condition: 340
   train:
     # Training covers short-to-medium traces with simple padding. It stops at
@@ -31,14 +31,15 @@ generation:
   # Periodic traces mostly extend deep copy provenance chains; occasional
   # constants retain multiple value lineages and reset selected chains.
   periodic_constant_probability: 0.1
+  periodic_sampling_method: layered
   conditions:
     # Padding is scheduled on short sources, then shared by all three derived
     # complexity classes and every selected formatter.
     - complexity: periodic
       splits: [test]
-      num_variables: [2, 4, 6]
+      num_variables: [6, 8, 16]
       num_values: 10
-      extra_assignments: {min: 1, max: 1}
+      extra_assignments: {min: 16, max: 16}
       # The fixed condition budget is spread across the zero-padding baseline
       # and every nonzero proportion/distraction combination.
       filler:
@@ -49,11 +50,11 @@ generation:
     # tractable; these rows are likewise emitted in all three classes.
     - complexity: periodic
       splits: [test]
-      num_variables: [2, 4, 6]
+      num_variables: [6, 8, 16]
       num_values: 10
       extra_assignments:
         distribution: log-spaced
-        min: 1
+        min: 16
         # RULER is the most token-dense formatter at about 15.2 tokens per
         # assignment; 64k assignments therefore stays just below 1m tokens.
         max: 64000
@@ -67,11 +68,11 @@ generation:
     - complexity: periodic
       splits: [train]
       formatters: [integer-code]
-      num_variables: [2, 4, 6]
+      num_variables: [6, 8, 16]
       num_values: 10
       extra_assignments:
         distribution: log-spaced
-        min: 1
+        min: 16
         max: 256
         growth_factor: 2.0
         sample_decay: 1.0
@@ -86,11 +87,11 @@ generation:
     - complexity: periodic
       splits: [test]
       formatters: [integer-code]
-      num_variables: [2, 4, 6]
+      num_variables: [6, 8, 16]
       num_values: 10
       extra_assignments:
         distribution: log-spaced
-        min: 1
+        min: 16
         max: 64000
         growth_factor: 2.0
         sample_decay: 1.0

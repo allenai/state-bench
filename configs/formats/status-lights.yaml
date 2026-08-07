@@ -3,7 +3,7 @@ name: status-lights
 renderer: template
 
 vocabulary:
-  variables: [light A, light B, light C, light D, light E, light F]
+  variables: [light A, light B, light C, light D, light E, light F, light G, light H, light I, light J, light K, light L, light M, light N, light O, light P]
   values: [red, orange, yellow, green, blue, purple, pink, teal, white, gray]
 
 templates:

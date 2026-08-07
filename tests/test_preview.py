@@ -74,11 +74,11 @@ def test_preview_can_select_an_exact_long_assignment_depth() -> None:
         loaded,
         config_name="integer-code--periodic",
         seed=7,
-        num_variables=2,
+        num_variables=6,
         extra_assignments=128,
     )
     assert preview.target_extra_assignments == 128
-    assert len(preview.instance.operations) == 130
+    assert len(preview.instance.operations) == 134
 
 
 def test_long_context_preview_exposes_padded_r_trivial_in_every_formatter() -> None:
@@ -97,11 +97,11 @@ def test_long_context_preview_exposes_padded_r_trivial_in_every_formatter() -> N
         loaded,
         config_name="cube-painting--r-trivial",
         seed=7,
-        num_variables=2,
+        num_variables=6,
         filler_proportion=0.9,
         filler_distraction="medium",
     )
     assert preview.rendered.filler_proportion == 0.9
     assert preview.rendered.filler_distraction == "medium"
-    assert preview.rendered.num_filler_lines == 45
+    assert preview.rendered.num_filler_lines == 216
     assert "Unrelated catalog note" in preview.rendered.prefix
