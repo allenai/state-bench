@@ -95,12 +95,9 @@ def test_long_context_experiment_config_loads() -> None:
     loaded = load_experiment(ROOT / "configs/experiments/long-context.yaml")
     assert loaded.spec.dataset.name == "state-tracking-long-context-v1"
     assert loaded.spec.splits["test"].samples_per_condition == 340
-    train = loaded.spec.splits["train"]
-    assert train.samples_per_condition == 15_400_000
-    assert train.formatters == ["integer-code"]
-    assert train.disjoint_from == ["test"]
-    assert len(loaded.spec.generation.conditions) == 4
-    padded, long, training, padded_long = loaded.spec.generation.conditions
+    assert set(loaded.spec.splits) == {"test"}
+    assert len(loaded.spec.generation.conditions) == 3
+    padded, long, padded_long = loaded.spec.generation.conditions
     assert padded.splits == ["test"]
     assert padded.formatters is None
     assert padded.filler.proportions == [0.0, 0.25, 0.5, 0.75, 0.9]
@@ -115,17 +112,6 @@ def test_long_context_experiment_config_loads() -> None:
     bucket_counts = allocate_bucket_counts(long.extra_assignments, total_samples=340)
     assert sum(bucket_counts.values()) == 340
     assert min(bucket_counts.values()) >= 20
-    assert training.splits == ["train"]
-    assert training.formatters == ["integer-code"]
-    assert isinstance(training.extra_assignments, LogSpacedAssignmentSchedule)
-    assert training.extra_assignments.min == 16
-    assert training.extra_assignments.max == 256
-    assert training.extra_assignments.growth_factor == 2.0
-    assert training.extra_assignments.sample_decay == 1.0
-    assert training.extra_assignments.jitter_fraction == 0.0
-    assert training.extra_assignments.min_samples_per_bucket == 1
-    assert training.filler.proportions == [0.0, 0.25]
-    assert training.filler.distraction_levels == ["easy"]
     assert padded_long.splits == ["test"]
     assert padded_long.formatters == ["integer-code"]
     assert isinstance(padded_long.extra_assignments, LogSpacedAssignmentSchedule)
@@ -156,36 +142,22 @@ def test_long_context_experiment_config_loads() -> None:
     assert next(item for item in token_strata.ranges if item.name == "tokens_128k").min_tokens == 98_304
 
 
-def test_train_profile_experiment_matches_long_context_train_settings() -> None:
-    production = load_experiment(ROOT / "configs/experiments/long-context.yaml").spec
+def test_train_profile_experiment_preserves_disabled_train_settings() -> None:
     profile = load_experiment(
         ROOT / "configs/experiments/long-context-train-profile.yaml"
     ).spec
-    production_train = next(
-        condition
-        for condition in production.generation.conditions
-        if condition.splits == ["train"]
-    )
-
-    assert profile.splits["train"].samples_per_condition == (
-        production.splits["train"].samples_per_condition
-    )
-    assert profile.generation.model_copy(update={"conditions": []}) == (
-        production.generation.model_copy(
-            update={"conditions": [], "periodic_sampling_method": "layered"}
-        )
-    )
-    assert profile.generation.conditions == [
-        production_train.model_copy(
-            update={
-                "num_variables": [6, 8, 16],
-                "extra_assignments": production_train.extra_assignments.model_copy(
-                    update={"min": 16}
-                ),
-            }
-        )
-    ]
-    assert profile.output == production.output
+    assert profile.splits["train"].samples_per_condition == 15_400_000
+    assert profile.splits["train"].formatters == ["integer-code"]
+    assert profile.splits["train"].disjoint_from == []
+    assert profile.generation.periodic_sampling_method == "layered"
+    assert len(profile.generation.conditions) == 1
+    training = profile.generation.conditions[0]
+    assert training.splits == ["train"]
+    assert training.formatters == ["integer-code"]
+    assert training.num_variables == [6, 8, 16]
+    assert isinstance(training.extra_assignments, LogSpacedAssignmentSchedule)
+    assert training.extra_assignments.min == 16
+    assert training.extra_assignments.max == 256
 
 
 def test_filler_plan_preserves_budget_and_evenly_covers_axis() -> None:
