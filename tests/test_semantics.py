@@ -6,7 +6,7 @@ import pytest
 
 from state_bench.generation import derive_instance, derive_variants, generate_instance
 from state_bench.model import AssignConstant, AssignVariable, Complexity, StateTrackingInstance
-from state_bench.semantics import dependency_lengths, dependency_summary, evaluate
+from state_bench.semantics import dependency_lengths, dependency_summary, evaluate, sensitivity_summary
 
 
 def test_prompt_examples() -> None:
@@ -348,3 +348,32 @@ def test_dependency_lengths_follow_eager_copy_provenance_and_overwrites() -> Non
     assert summary.max_dependency_length == 3
     assert summary.mean_dependency_length == pytest.approx(5 / 3)
     assert summary.modal_dependency_length == 0
+
+
+def test_sensitivity_summary_is_an_exact_reverse_dataflow_measure() -> None:
+    instance = StateTrackingInstance.create(
+        complexity=Complexity.PERIODIC,
+        num_variables=2,
+        num_values=3,
+        operations=(
+            AssignConstant(0, 0),
+            AssignConstant(1, 1),
+            AssignVariable(0, 1),
+        ),
+        query=(0, 1),
+        final_state=(1, 1),
+    )
+
+    summary = sensitivity_summary(instance)
+    # At the final boundary, each variable reaches its own output. Before the
+    # copy, variable 1 reaches both outputs and variable 0 reaches neither.
+    assert summary.sensitivity_state_count == 2
+    assert summary.sensitivity_output_count == 2
+    assert summary.sensitivity_density == pytest.approx(0.5)
+    assert summary.sensitivity_coverage == pytest.approx(0.75)
+    assert summary.mean_live_fanout == pytest.approx(4 / 3)
+
+    # The derived aperiodic program resolves the copy to a literal, so the
+    # same structural trace has less runtime state-to-output influence.
+    aperiodic = derive_instance(instance, complexity=Complexity.APERIODIC)
+    assert sensitivity_summary(aperiodic).sensitivity_density == pytest.approx(0.375)

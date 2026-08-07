@@ -41,7 +41,7 @@ from state_bench.scheduling import (
     iter_balanced_filler_plan,
     iter_randomized_assignment_plan,
 )
-from state_bench.semantics import dependency_summary
+from state_bench.semantics import dependency_summary, sensitivity_summary
 
 _MINIMAL_SOURCE_CHUNK_SIZE = 1024
 
@@ -547,6 +547,7 @@ def build_dataset(
                                     "source_instance_id": source.instance_id,
                                     **instance.to_record(),
                                     **dependency_summary(instance).to_record(),
+                                    **sensitivity_summary(instance).to_record(),
                                     "num_extra_assignments": len(instance.operations) - num_variables,
                                     "target_extra_assignments": plan_item.target_extra_assignments,
                                     "filler_proportion": filler_item.proportion,
@@ -731,7 +732,7 @@ def _minimal_rendered_record(
     source_example_id: str,
     source_instance_id: str,
     rendered: RenderedExample,
-) -> dict[str, str]:
+) -> dict[str, str | int | float]:
     record = {
         "example_id": example_id,
         "source_example_id": source_example_id,
@@ -741,6 +742,11 @@ def _minimal_rendered_record(
         "complexity": rendered.complexity,
         "prefix": rendered.prefix,
         "completion": rendered.completion,
+        "sensitivity_state_count": rendered.sensitivity_state_count,
+        "sensitivity_output_count": rendered.sensitivity_output_count,
+        "sensitivity_density": rendered.sensitivity_density,
+        "sensitivity_coverage": rendered.sensitivity_coverage,
+        "mean_live_fanout": rendered.mean_live_fanout,
     }
     record.update(
         _document_fields(

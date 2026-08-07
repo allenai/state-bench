@@ -169,9 +169,20 @@ def test_train_profile_experiment_matches_long_context_train_settings() -> None:
         production.splits["train"].samples_per_condition
     )
     assert profile.generation.model_copy(update={"conditions": []}) == (
-        production.generation.model_copy(update={"conditions": []})
+        production.generation.model_copy(
+            update={"conditions": [], "periodic_sampling_method": "layered"}
+        )
     )
-    assert profile.generation.conditions == [production_train]
+    assert profile.generation.conditions == [
+        production_train.model_copy(
+            update={
+                "num_variables": [8, 16],
+                "extra_assignments": production_train.extra_assignments.model_copy(
+                    update={"min": 16}
+                ),
+            }
+        )
+    ]
     assert profile.output == production.output
 
 

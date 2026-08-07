@@ -10,7 +10,7 @@ from typing import Any
 
 from state_bench.config import FillerDistraction, FormatterSpec, TemplateValue
 from state_bench.model import AssignConstant, AssignVariable, StateTrackingInstance
-from state_bench.semantics import dependency_summary
+from state_bench.semantics import dependency_summary, sensitivity_summary
 
 
 @dataclass(frozen=True, slots=True)
@@ -37,6 +37,11 @@ class RenderedExample:
     max_dependency_length: int
     mean_dependency_length: float
     modal_dependency_length: int
+    sensitivity_state_count: int
+    sensitivity_output_count: int
+    sensitivity_density: float
+    sensitivity_coverage: float
+    mean_live_fanout: float
 
     def to_record(self) -> dict[str, Any]:
         return {
@@ -62,6 +67,11 @@ class RenderedExample:
             "max_dependency_length": self.max_dependency_length,
             "mean_dependency_length": self.mean_dependency_length,
             "modal_dependency_length": self.modal_dependency_length,
+            "sensitivity_state_count": self.sensitivity_state_count,
+            "sensitivity_output_count": self.sensitivity_output_count,
+            "sensitivity_density": self.sensitivity_density,
+            "sensitivity_coverage": self.sensitivity_coverage,
+            "mean_live_fanout": self.mean_live_fanout,
         }
 
 
@@ -188,6 +198,7 @@ def render_instance(
         choices = [value + "\n" for value in choices]
 
     dependencies = dependency_summary(instance) if include_diagnostics else None
+    sensitivity = sensitivity_summary(instance)
     return RenderedExample(
         instance_id=instance.instance_id,
         formatter=formatter.name,
@@ -215,6 +226,11 @@ def render_instance(
         max_dependency_length=(dependencies.max_dependency_length if dependencies else 0),
         mean_dependency_length=(dependencies.mean_dependency_length if dependencies else 0.0),
         modal_dependency_length=(dependencies.modal_dependency_length if dependencies else 0),
+        sensitivity_state_count=sensitivity.sensitivity_state_count,
+        sensitivity_output_count=sensitivity.sensitivity_output_count,
+        sensitivity_density=sensitivity.sensitivity_density,
+        sensitivity_coverage=sensitivity.sensitivity_coverage,
+        mean_live_fanout=sensitivity.mean_live_fanout,
     )
 
 

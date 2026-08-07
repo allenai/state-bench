@@ -146,6 +146,9 @@ def test_build_preserves_ids_across_formatters(tmp_path: Path) -> None:
         assert rendered_row["max_dependency_length"] == canonical_row["max_dependency_length"]
         assert rendered_row["mean_dependency_length"] == canonical_row["mean_dependency_length"]
         assert rendered_row["modal_dependency_length"] == canonical_row["modal_dependency_length"]
+        assert rendered_row["sensitivity_density"] == canonical_row["sensitivity_density"]
+        assert rendered_row["sensitivity_coverage"] == canonical_row["sensitivity_coverage"]
+        assert rendered_row["mean_live_fanout"] == canonical_row["mean_live_fanout"]
     for row in (*integer, *cubes):
         assert len(row["incorrect_completions"]) == 4
         assert len(set(row["incorrect_completions"])) == 4
@@ -293,6 +296,11 @@ def test_minimal_split_skips_distractors_and_dependency_diagnostics(
         "id",
         "text",
         "source",
+        "sensitivity_state_count",
+        "sensitivity_output_count",
+        "sensitivity_density",
+        "sensitivity_coverage",
+        "mean_live_fanout",
     }
     assert rows[0]["id"] == rows[0]["example_id"]
     assert rows[0]["text"] == f"{rows[0]['prefix']}\n{rows[0]['completion']}"

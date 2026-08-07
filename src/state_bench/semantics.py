@@ -27,6 +27,26 @@ class DependencySummary:
         }
 
 
+@dataclass(frozen=True, slots=True)
+class SensitivitySummary:
+    """Exact counterfactual influence of live program state on queried outputs."""
+
+    sensitivity_state_count: int
+    sensitivity_output_count: int
+    sensitivity_density: float
+    sensitivity_coverage: float
+    mean_live_fanout: float
+
+    def to_record(self) -> dict[str, Any]:
+        return {
+            "sensitivity_state_count": self.sensitivity_state_count,
+            "sensitivity_output_count": self.sensitivity_output_count,
+            "sensitivity_density": self.sensitivity_density,
+            "sensitivity_coverage": self.sensitivity_coverage,
+            "mean_live_fanout": self.mean_live_fanout,
+        }
+
+
 def evaluate(*, num_variables: int, num_values: int, operations: Sequence[Operation]) -> tuple[int, ...]:
     """Evaluate eager, copy-at-assignment-time variable semantics."""
 
@@ -97,6 +117,110 @@ def dependency_summary(instance: StateTrackingInstance) -> DependencySummary:
         max_dependency_length=max(lengths),
         mean_dependency_length=statistics.fmean(lengths),
         modal_dependency_length=mode,
+    )
+
+
+def sensitivity_summary(instance: StateTrackingInstance) -> SensitivitySummary:
+    """Summarize exact suffix influence from every fully initialized state.
+
+    At each boundary after all variables have been initialized, this asks which
+    queried final outputs would change if the current value of a variable were
+    replaced with a distinct value. A reverse pass propagates query-output
+    bitsets through variable copies and kills them at constant assignments.
+    """
+
+    start = _fully_initialized_boundary(
+        num_variables=instance.num_variables,
+        operations=instance.operations,
+    )
+    output_bits = [0] * instance.num_variables
+    for output_index, variable in enumerate(instance.query):
+        _validate_variable(variable, instance.num_variables)
+        output_bits[variable] |= 1 << output_index
+
+    total_affected_outputs = sum(bits.bit_count() for bits in output_bits)
+    live_variables = sum(bits != 0 for bits in output_bits)
+    aggregate_affected_outputs = total_affected_outputs
+    aggregate_live_variables = live_variables
+    state_count = 1
+
+    for index in range(len(instance.operations) - 1, -1, -1):
+        operation = instance.operations[index]
+        _validate_variable(operation.target, instance.num_variables)
+        if isinstance(operation, AssignConstant):
+            total_affected_outputs, live_variables = _replace_influence(
+                output_bits,
+                operation.target,
+                0,
+                total_affected_outputs=total_affected_outputs,
+                live_variables=live_variables,
+            )
+        else:
+            _validate_variable(operation.source, instance.num_variables)
+            if operation.source != operation.target:
+                target_bits = output_bits[operation.target]
+                total_affected_outputs, live_variables = _replace_influence(
+                    output_bits,
+                    operation.target,
+                    0,
+                    total_affected_outputs=total_affected_outputs,
+                    live_variables=live_variables,
+                )
+                total_affected_outputs, live_variables = _replace_influence(
+                    output_bits,
+                    operation.source,
+                    output_bits[operation.source] | target_bits,
+                    total_affected_outputs=total_affected_outputs,
+                    live_variables=live_variables,
+                )
+        if index >= start:
+            aggregate_affected_outputs += total_affected_outputs
+            aggregate_live_variables += live_variables
+            state_count += 1
+
+    denominator = state_count * instance.num_variables
+    return SensitivitySummary(
+        sensitivity_state_count=state_count,
+        sensitivity_output_count=len(instance.query),
+        sensitivity_density=aggregate_affected_outputs / (denominator * len(instance.query)),
+        sensitivity_coverage=aggregate_live_variables / denominator,
+        mean_live_fanout=(
+            aggregate_affected_outputs / aggregate_live_variables
+            if aggregate_live_variables
+            else 0.0
+        ),
+    )
+
+
+def _fully_initialized_boundary(*, num_variables: int, operations: Sequence[Operation]) -> int:
+    """Return the first program boundary at which every variable has a value."""
+
+    initialized: set[int] = set()
+    for index, operation in enumerate(operations):
+        _validate_variable(operation.target, num_variables)
+        initialized.add(operation.target)
+        if len(initialized) == num_variables:
+            return index + 1
+    raise ValueError("sensitivity requires every variable to be initialized")
+
+
+def _replace_influence(
+    output_bits: list[int],
+    variable: int,
+    replacement: int,
+    *,
+    total_affected_outputs: int,
+    live_variables: int,
+) -> tuple[int, int]:
+    """Replace one reverse-live bitset while maintaining aggregate counters."""
+
+    previous = output_bits[variable]
+    if previous == replacement:
+        return total_affected_outputs, live_variables
+    output_bits[variable] = replacement
+    return (
+        total_affected_outputs + replacement.bit_count() - previous.bit_count(),
+        live_variables + (replacement != 0) - (previous != 0),
     )
 
 
