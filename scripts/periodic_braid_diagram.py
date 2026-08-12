@@ -5,20 +5,26 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
 
+import matplotlib.patheffects as pe
 import matplotlib.pyplot as plt
 import numpy as np
 import seaborn as sns
-from matplotlib.lines import Line2D
 
 
 def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("input", type=Path, help="Canonical JSONL dataset input.")
-    parser.add_argument("--output", type=Path, required=True, help="Destination image path.")
+    parser.add_argument(
+        "--output",
+        type=Path,
+        required=True,
+        help="Destination image path; use a .pdf or .svg suffix for vector output.",
+    )
     selection = parser.add_mutually_exclusive_group()
     selection.add_argument(
         "--instance-id",
@@ -101,137 +107,182 @@ def initial_state(record: dict[str, Any]) -> tuple[list[int], list[dict[str, Any
     return [int(value) for value in state], operations[num_registers:]
 
 
+_BACKGROUND = "#ffffff"
+_TRACK_COLOR = "#e9e9ee"
+_INK = "#2a2a30"
+_STRAND_WIDTH = 3.4
+_CASING_EXTRA = 3.0
+
+
+def _value_palette(values: Sequence[int]) -> dict[int, tuple[float, float, float]]:
+    """A calm, colorblind-aware qualitative palette keyed by observed value."""
+
+    count = len(values)
+    name = "colorblind" if count <= 10 else "husl"
+    palette = sns.color_palette(name, n_colors=max(count, 1))
+    return dict(zip(values, palette, strict=False))
+
+
+def _time_ticks(max_step: int, target: int = 10) -> list[int]:
+    """Round-stride tick positions from 0, always including the final step.
+
+    The stride is the smallest 1/2/5 x 10^k value that keeps the count near
+    ``target``, so labels land on round numbers instead of a floored even split.
+    """
+
+    if max_step <= target:
+        step = 1
+    else:
+        raw = max_step / target
+        magnitude = 10.0 ** math.floor(math.log10(raw))
+        step = next(
+            (int(factor * magnitude) for factor in (1, 2, 5, 10) if factor * magnitude >= raw),
+            int(10 * magnitude),
+        )
+    ticks = list(range(0, max_step + 1, max(step, 1)))
+    if ticks[-1] != max_step:
+        ticks.append(max_step)
+    # Drop a penultimate tick that would crowd the always-present final one.
+    if len(ticks) >= 2 and ticks[-1] - ticks[-2] < step * 0.6:
+        del ticks[-2]
+    return ticks
+
+
+def _smooth_crossing(x0: float, x1: float, y0: float, y1: float, samples: int = 72) -> tuple[Any, Any]:
+    """Sample a smootherstep S-curve with horizontal tangents at both ends."""
+
+    fraction = np.linspace(0.0, 1.0, samples)
+    eased = fraction * fraction * fraction * (fraction * (fraction * 6.0 - 15.0) + 10.0)
+    return x0 + (x1 - x0) * fraction, y0 + (y1 - y0) * eased
+
+
+def _draw_strand(axis: Any, xs: Any, ys: Any, color: Any, *, zorder: float) -> None:
+    """Draw one colored strand cased in the background color for a woven look."""
+
+    axis.plot(
+        xs,
+        ys,
+        color=color,
+        linewidth=_STRAND_WIDTH,
+        solid_capstyle="round",
+        solid_joinstyle="round",
+        zorder=zorder,
+        path_effects=[
+            pe.Stroke(linewidth=_STRAND_WIDTH + _CASING_EXTRA, foreground=_BACKGROUND),
+            pe.Normal(),
+        ],
+    )
+
+
 def render_braid(record: dict[str, Any], *, output: Path, title: str | None) -> None:
     """Draw live values flowing through registers across extra assignments."""
 
     state, operations = initial_state(record)
     labels = variable_labels(int(record["num_variables"]), record.get("temporary_variable"))
+    temporary_row = record.get("temporary_variable")
     observed_values = sorted(
         set(state)
-        | {
-            int(operation["value"])
-            for operation in operations
-            if operation["op"] == "constant"
-        }
+        | {int(operation["value"]) for operation in operations if operation["op"] == "constant"}
     )
-    colors = dict(
-        zip(
-            observed_values,
-            sns.color_palette("husl", n_colors=len(observed_values)),
-            strict=True,
-        )
-    )
+    colors = _value_palette(observed_values)
 
-    sns.set_theme(style="whitegrid", context="talk")
-    width = min(40.0, max(12.0, 0.22 * (len(operations) + 1)))
-    height = max(4.0, 0.72 * len(labels) + 1.8)
+    sns.set_theme(style="white", context="paper")
+    # Pin DejaVu Sans everywhere; register names use DejaVu Sans Mono below.
+    plt.rcParams["font.family"] = "sans-serif"
+    plt.rcParams["font.sans-serif"] = ["DejaVu Sans"]
+    plt.rcParams["font.monospace"] = ["DejaVu Sans Mono"]
+    # Keep text as editable glyphs in vector output (.pdf / .svg).
+    plt.rcParams["svg.fonttype"] = "none"
+    plt.rcParams["pdf.fonttype"] = 42
+    plt.rcParams["ps.fonttype"] = 42
+    max_step = len(operations)
+    width = min(30.0, max(6.5, 0.3 * (max_step + 1) + 1.6))
+    height = max(1.1, 0.17 * len(labels) + 0.6)
     figure, axis = plt.subplots(figsize=(width, height))
+    figure.patch.set_facecolor(_BACKGROUND)
+    axis.set_facecolor(_BACKGROUND)
 
-    for row, value in enumerate(state):
-        axis.scatter(0, row, s=42, color=colors[value], edgecolor="white", linewidth=0.6, zorder=4)
+    # Faint full-width track behind every register; the scratch register is
+    # dashed so it reads as auxiliary rather than a task variable.
+    for row in range(len(labels)):
+        axis.plot(
+            [-0.15, max_step + 0.15],
+            [row, row],
+            color=_TRACK_COLOR,
+            linewidth=1.4,
+            linestyle=(0, (1, 2)) if row == temporary_row else "-",
+            zorder=0.5,
+            solid_capstyle="round",
+        )
 
+    # Simulate once, collecting whole-run horizontal strands (so casing does not
+    # chop them into dashes), smooth copy crossings, and constant markers.
+    initial = state.copy()
+    run_start = [0] * len(state)
+    horizontal_runs: list[tuple[int, int, int, int]] = []
+    crossings: list[tuple[int, int, int, int, int]] = []
+    constants: list[tuple[int, int, int]] = []
     for step, operation in enumerate(operations, start=1):
-        previous = state.copy()
         target = int(operation["target"])
-        for row, value in enumerate(previous):
-            if row != target:
-                axis.plot(
-                    [step - 1, step],
-                    [row, row],
-                    color=colors[value],
-                    linewidth=1.35,
-                    alpha=0.72,
-                    solid_capstyle="round",
-                    zorder=2,
-                )
-
+        horizontal_runs.append((target, run_start[target], step - 1, state[target]))
         if operation["op"] == "variable":
             source = int(operation["source"])
-            state[target] = previous[source]
-            axis.plot(
-                [step - 1, step],
-                [source, target],
-                color=colors[state[target]],
-                linewidth=2.5,
-                alpha=0.95,
-                solid_capstyle="round",
-                zorder=3,
-            )
-            marker = "o"
+            new_value = state[source]
+            crossings.append((step - 1, step, source, target, new_value))
         elif operation["op"] == "constant":
-            state[target] = int(operation["value"])
-            marker = "s"
+            new_value = int(operation["value"])
+            constants.append((step, target, new_value))
         else:
             raise ValueError(f"unknown operation type: {operation['op']!r}")
-        axis.scatter(
-            step,
-            target,
-            s=34,
-            marker=marker,
-            color=colors[state[target]],
-            edgecolor="white",
-            linewidth=0.5,
-            zorder=4,
-        )
+        state[target] = new_value
+        run_start[target] = step
+    for row in range(len(state)):
+        horizontal_runs.append((row, run_start[row], max_step, state[row]))
 
     if state != [int(value) for value in record["final_state"]]:
         raise ValueError("evaluated braid state does not match the record's final state")
 
-    max_step = len(operations)
-    tick_count = min(12, max_step + 1)
-    ticks = np.unique(np.linspace(0, max_step, tick_count, dtype=int))
-    axis.set_xticks(ticks)
-    axis.set_yticks(range(len(labels)), labels)
-    axis.set_xlim(-0.5, max_step + 0.5)
-    axis.set_ylim(len(labels) - 0.5, -0.5)
-    axis.set(
-        xlabel="Extra assignment (time step)",
-        ylabel="Variable",
-        title=title
-        or (
-            f"Value-flow braid: {record['num_variables']} real variables, "
-            f"{len(operations):,} extra assignments"
-        ),
-    )
-    axis.grid(axis="x", alpha=0.12)
-    axis.grid(axis="y", alpha=0.25)
-
-    value_handles = [
-        Line2D(
-            [0],
-            [0],
-            color=colors[value],
-            marker="o",
-            linewidth=2,
-            markersize=6,
-            label=str(value),
+    # Carried values (drawn first, so copy crossings weave over them).
+    for row, x_start, x_end, value in horizontal_runs:
+        if x_end > x_start:
+            _draw_strand(axis, [x_start, x_end], [row, row], colors[value], zorder=2)
+    for x0, x1, source, target, value in crossings:
+        crossing_x, crossing_y = _smooth_crossing(x0, x1, source, target)
+        _draw_strand(axis, crossing_x, crossing_y, colors[value], zorder=3)
+    # Squares mark every value introduced by a constant assignment: the initial
+    # register values and each mid-trace constant. Copies carry no marker.
+    for step, target, value in [*((0, row, value) for row, value in enumerate(initial)), *constants]:
+        axis.scatter(
+            step, target, s=54, marker="s", color=colors[value],
+            edgecolor=_BACKGROUND, linewidth=1.1, zorder=5,
         )
-        for value in observed_values
-    ]
-    figure.legend(
-        handles=value_handles,
-        title="Value",
-        bbox_to_anchor=(1.0, 0.9),
-        loc="upper left",
-        frameon=False,
-        ncols=max(1, (len(value_handles) + 9) // 10),
-    )
-    operation_handles = [
-        Line2D([0], [0], marker="o", color="0.35", linewidth=0, label="Copied value"),
-        Line2D([0], [0], marker="s", color="0.35", linewidth=0, label="New constant"),
-    ]
-    axis.legend(
-        handles=operation_handles,
-        title="Assignment",
-        bbox_to_anchor=(0.5, -0.43),
-        loc="upper center",
-        frameon=False,
-        ncols=2,
-    )
 
-    figure.tight_layout()
+    # Read off the final state at the right edge, colored to match each strand.
+    final_label_x = max_step + 0.35
+    for row, value in enumerate(state):
+        axis.text(
+            final_label_x, row, str(value), va="center", ha="left",
+            color=colors[value], fontweight="bold", fontsize=9, zorder=6,
+        )
+
+    axis.set_xticks(_time_ticks(max_step))
+    axis.set_yticks(range(len(labels)))
+    axis.set_yticklabels(labels, fontfamily="monospace")
+    for tick_label, row in zip(axis.get_yticklabels(), range(len(labels)), strict=True):
+        if row == temporary_row:
+            tick_label.set_style("italic")
+            tick_label.set_color("#8a8a92")
+    axis.set_xlim(-0.6, max_step + 1.1)
+    axis.set_ylim(len(labels) - 0.4, -0.6)
+    axis.set_xlabel("assignment step", color=_INK)
+    axis.tick_params(axis="both", length=0, colors=_INK)
+    for spine in axis.spines.values():
+        spine.set_visible(False)
+    if title:
+        axis.set_title(title, color=_INK, pad=12)
+
     output.parent.mkdir(parents=True, exist_ok=True)
-    figure.savefig(output, dpi=180, bbox_inches="tight")
+    figure.savefig(output, dpi=300, bbox_inches="tight", facecolor=_BACKGROUND)
     plt.close(figure)
 
 
