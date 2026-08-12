@@ -29,7 +29,7 @@ from state_bench.config import (
     split_uses_formatter,
 )
 from state_bench.distractors import generate_incorrect_states
-from state_bench.generation import derive_variants, generate_periodic_source
+from state_bench.generation import PeriodicSamplingMethod, derive_variants, generate_periodic_source
 from state_bench.model import Complexity, QueryMode, StateTrackingInstance
 from state_bench.rendering import RenderedExample, render_instance
 from state_bench.scheduling import (
@@ -128,7 +128,7 @@ class _GenerationTask:
     require_strict_witness: bool
     allow_self_reference: bool
     periodic_constant_probability: float
-    periodic_sampling_method: str
+    periodic_sampling_method: PeriodicSamplingMethod
     root_seed: int
     excluded_semantics: frozenset[str]
     plan_item: AssignmentPlanItem
@@ -548,7 +548,9 @@ def build_dataset(
                                     **instance.to_record(),
                                     **dependency_summary(instance).to_record(),
                                     **sensitivity_summary(instance).to_record(),
-                                    "num_extra_assignments": len(instance.operations) - num_variables,
+                                    "num_extra_assignments": (
+                                        len(instance.operations) - instance.num_initial_assignments
+                                    ),
                                     "target_extra_assignments": plan_item.target_extra_assignments,
                                     "filler_proportion": filler_item.proportion,
                                     "filler_distraction": filler_item.distraction,
@@ -631,7 +633,9 @@ def build_dataset(
                                     "source_example_id": source_example_id,
                                     "source_instance_id": source.instance_id,
                                     **rendered.to_record(),
-                                    "num_extra_assignments": len(instance.operations) - num_variables,
+                                    "num_extra_assignments": (
+                                        len(instance.operations) - instance.num_initial_assignments
+                                    ),
                                     "target_extra_assignments": plan_item.target_extra_assignments,
                                     }
                                 if include_trace:

@@ -15,15 +15,15 @@ generation:
   require_strict_witness: true
   allow_self_reference: false
   distinct_initial_values: false
-  # Exactly 20% of extra assignments are value resets. They are placed before
-  # the copy-only recovery suffix and favor targets with later updates.
+  # About 20% of extra assignments are value resets. They are placed early and
+  # favor real variables with many later TMP-based swaps.
   periodic_constant_probability: 0.2
-  periodic_sampling_method: layered
+  periodic_sampling_method: swap
   conditions:
     - complexity: periodic
       splits: [test]
       formatters: [integer-code]
-      num_variables: [8, 16]
+      num_variables: [2, 4, 8, 16]
       num_values: 10
       extra_assignments:
         distribution: log-spaced

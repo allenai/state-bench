@@ -39,7 +39,10 @@ def last_literal_agreement(record: dict[str, object]) -> float:
     for operation in record["operations"]:
         if operation["op"] == "constant":
             last_literals[int(operation["target"])] = int(operation["value"])
-    query = [int(variable) for variable in record["query"]]
+    temporary = record.get("temporary_variable")
+    query = [
+        int(variable) for variable in record["query"] if variable != temporary
+    ]
     return float(
         np.mean([final_state[variable] == last_literals[variable] for variable in query])
     )
@@ -49,7 +52,10 @@ def sequence_frame(records: list[dict[str, object]]) -> pd.DataFrame:
     rows: list[dict[str, float | int]] = []
     for record in records:
         depths = [int(depth) for depth in record["final_dependency_lengths"]]
-        query = [int(variable) for variable in record["query"]]
+        temporary = record.get("temporary_variable")
+        query = [
+            int(variable) for variable in record["query"] if variable != temporary
+        ]
         queried_depths = [depths[variable] for variable in query]
         final_state = list(record["final_state"])
         rows.append(

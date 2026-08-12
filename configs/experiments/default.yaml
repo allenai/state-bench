@@ -22,7 +22,7 @@ generation:
     - complexity: periodic
       num_variables: [2, 4, 6]
       num_values: 10
-      extra_assignments: {min: 1, max: 20}
+      extra_assignments: {min: 3, max: 20}
 
 formatters:
   - config: ../formats/integer-code.yaml

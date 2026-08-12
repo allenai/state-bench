@@ -20,17 +20,17 @@ generation:
   allow_self_reference: false
   distinct_initial_values: false
   periodic_constant_probability: 0.1
-  periodic_sampling_method: layered
+  periodic_sampling_method: swap
   conditions:
     - complexity: periodic
       splits: [train]
       formatters: [integer-code]
-      num_variables: [6, 8, 16]
+      num_variables: [2, 4, 8, 16]
       num_values: 10
       extra_assignments:
         distribution: log-spaced
-        # Layered sampling needs at least one assignment per variable.
-        min: 16
+        # The minimum leaves room for several complete TMP-based swaps.
+        min: 32
         max: 256
         growth_factor: 2.0
         sample_decay: 1.0

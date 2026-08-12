@@ -176,7 +176,7 @@ def analyze_records(
     }
     row_count = 0
 
-    for record_batch in batched(records, batch_size, strict=False):
+    for record_batch in batched(records, batch_size):
         batch = list(record_batch)
         if not batch:
             continue

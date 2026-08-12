@@ -107,7 +107,7 @@ def analyze_token_lengths(
 
     lengths_by_group: dict[tuple[str, ...], list[int]] = defaultdict(list)
     all_lengths: list[int] = []
-    for record_batch in batched(records, batch_size, strict=False):
+    for record_batch in batched(records, batch_size):
         batch = list(record_batch)
         for index, record in enumerate(batch):
             missing = {"prefix", "completion", *group_by} - record.keys()

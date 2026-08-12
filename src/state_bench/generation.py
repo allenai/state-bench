@@ -15,7 +15,7 @@ from state_bench.model import (
     StateTrackingInstance,
 )
 
-PeriodicSamplingMethod = Literal["greedy", "layered"]
+PeriodicSamplingMethod = Literal["swap"]
 
 
 def generate_instance(
@@ -30,7 +30,7 @@ def generate_instance(
     require_strict_witness: bool = True,
     allow_self_reference: bool = False,
     periodic_constant_probability: float = 0.1,
-    periodic_sampling_method: PeriodicSamplingMethod = "greedy",
+    periodic_sampling_method: PeriodicSamplingMethod = "swap",
     rng: random.Random,
 ) -> StateTrackingInstance:
     """Generate a periodic source trace and return the requested derivation."""
@@ -62,7 +62,7 @@ def generate_periodic_source(
     require_strict_witness: bool = True,
     allow_self_reference: bool = False,
     periodic_constant_probability: float = 0.1,
-    periodic_sampling_method: PeriodicSamplingMethod = "greedy",
+    periodic_sampling_method: PeriodicSamplingMethod = "swap",
     rng: random.Random,
 ) -> StateTrackingInstance:
     """Generate the periodic source-of-truth for a three-family trace set."""
@@ -78,79 +78,15 @@ def generate_periodic_source(
         periodic_sampling_method=periodic_sampling_method,
     )
 
-    if periodic_sampling_method == "layered":
-        return _generate_layered_periodic_source(
-            num_variables=num_variables,
-            num_values=num_values,
-            min_extra_assignments=min_extra_assignments,
-            max_extra_assignments=max_extra_assignments,
-            periodic_constant_probability=periodic_constant_probability,
-            query_mode=query_mode,
-            rng=rng,
-        )
-
-    initial_values = _initial_values(
+    return _generate_swap_periodic_source(
         num_variables=num_variables,
         num_values=num_values,
-        distinct=distinct_initial_values,
-        require_diversity=require_strict_witness,
+        min_extra_assignments=min_extra_assignments,
+        max_extra_assignments=max_extra_assignments,
+        periodic_constant_probability=periodic_constant_probability,
+        query_mode=query_mode,
+        distinct_initial_values=distinct_initial_values,
         rng=rng,
-    )
-    variable_order = list(range(num_variables))
-    rng.shuffle(variable_order)
-    operations: list[Operation] = [
-        AssignConstant(target=variable, value=initial_values[variable]) for variable in variable_order
-    ]
-    state = list(initial_values)
-    dependency_depths = [0] * num_variables
-    target_periodic_diversity = len(set(state))
-
-    extra_count = rng.randint(min_extra_assignments, max_extra_assignments)
-    remaining_count = extra_count
-    if require_strict_witness:
-        witness = _choose_periodic_copy(
-            state=state,
-            desired_diversity=target_periodic_diversity,
-            dependency_depths=dependency_depths,
-            exact=True,
-            rng=rng,
-        )
-        if witness is None:
-            witness = _choose_periodic_copy(
-                state=state,
-                desired_diversity=target_periodic_diversity,
-                dependency_depths=dependency_depths,
-                exact=None,
-                rng=rng,
-            )
-        assert witness is not None
-        operations.append(witness)
-        _apply(witness, state)
-        _apply_dependency(witness, dependency_depths)
-        remaining_count -= 1
-    for index in range(remaining_count):
-        operation = _value_aware_periodic_operation(
-            state=state,
-            dependency_depths=dependency_depths,
-            num_values=num_values,
-            allow_self_reference=allow_self_reference,
-            constant_probability=periodic_constant_probability,
-            desired_diversity=target_periodic_diversity,
-            remaining_after=remaining_count - index - 1,
-            rng=rng,
-        )
-        operations.append(operation)
-        _apply(operation, state)
-        _apply_dependency(operation, dependency_depths)
-
-    query = _choose_query(num_variables=num_variables, query_mode=query_mode, rng=rng)
-    return StateTrackingInstance.create(
-        complexity=Complexity.PERIODIC,
-        num_variables=num_variables,
-        num_values=num_values,
-        operations=tuple(operations),
-        query=query,
-        final_state=tuple(state),
     )
 
 
@@ -173,8 +109,8 @@ def derive_instance(
     if complexity is Complexity.PERIODIC:
         return source
 
-    source_state: list[int | None] = [None] * source.num_variables
-    first_values: list[int | None] = [None] * source.num_variables
+    source_state: list[int | None] = [None] * source.num_registers
+    first_values: list[int | None] = [None] * source.num_registers
     operations: list[Operation] = []
     for operation in source.operations:
         if isinstance(operation, AssignConstant):
@@ -201,7 +137,7 @@ def derive_instance(
         final_state = source.final_state
     else:
         final_state = tuple(value for value in first_values if value is not None)
-        if len(final_state) != source.num_variables:
+        if len(final_state) != source.num_registers:
             raise ValueError("source trace leaves a variable uninitialized")
     return StateTrackingInstance.create(
         complexity=complexity,
@@ -210,6 +146,7 @@ def derive_instance(
         operations=operation_tuple,
         query=source.query,
         final_state=final_state,
+        temporary_variable=source.temporary_variable,
     )
 
 
@@ -219,8 +156,8 @@ def derive_variants(source: StateTrackingInstance) -> tuple[StateTrackingInstanc
     if source.complexity is not Complexity.PERIODIC:
         raise ValueError("derived instances require a periodic source")
 
-    source_state: list[int | None] = [None] * source.num_variables
-    first_values: list[int | None] = [None] * source.num_variables
+    source_state: list[int | None] = [None] * source.num_registers
+    first_values: list[int | None] = [None] * source.num_registers
     aperiodic_operations: list[Operation] = []
     r_trivial_operations: list[Operation] = []
     for operation in source.operations:
@@ -240,7 +177,7 @@ def derive_variants(source: StateTrackingInstance) -> tuple[StateTrackingInstanc
         source_state[operation.target] = source_value
 
     r_trivial_state = tuple(value for value in first_values if value is not None)
-    if len(r_trivial_state) != source.num_variables:
+    if len(r_trivial_state) != source.num_registers:
         raise ValueError("source trace leaves a variable uninitialized")
     derived = {
         Complexity.R_TRIVIAL: StateTrackingInstance.create(
@@ -250,6 +187,7 @@ def derive_variants(source: StateTrackingInstance) -> tuple[StateTrackingInstanc
             operations=tuple(r_trivial_operations),
             query=source.query,
             final_state=r_trivial_state,
+            temporary_variable=source.temporary_variable,
         ),
         Complexity.APERIODIC: StateTrackingInstance.create(
             complexity=Complexity.APERIODIC,
@@ -258,6 +196,7 @@ def derive_variants(source: StateTrackingInstance) -> tuple[StateTrackingInstanc
             operations=tuple(aperiodic_operations),
             query=source.query,
             final_state=source.final_state,
+            temporary_variable=source.temporary_variable,
         ),
         Complexity.PERIODIC: source,
     }
@@ -283,26 +222,16 @@ def _validate_parameters(
         raise ValueError("distinct initial values require num_values >= num_variables")
     if not 0 <= periodic_constant_probability <= 1:
         raise ValueError("periodic constant probability must satisfy 0 <= probability <= 1")
-    if periodic_sampling_method not in {"greedy", "layered"}:
+    if periodic_sampling_method != "swap":
         raise ValueError(f"unknown periodic sampling method: {periodic_sampling_method!r}")
-    if periodic_sampling_method == "layered":
-        if num_variables < 6 or num_variables % 2:
-            raise ValueError("layered periodic sampling requires an even number of variables at least 6")
-        if num_values < num_variables // 2:
-            raise ValueError("layered periodic sampling needs at least one distinct value per bank lane")
-        if min_extra_assignments < num_variables:
-            raise ValueError(
-                "layered periodic sampling needs at least one copy update per variable "
-                "to remove literal final-state anchors"
-            )
     if require_strict_witness:
-        if min_extra_assignments < 1:
-            raise ValueError("strict periodic instances require at least one extra assignment")
+        if max_extra_assignments < 3:
+            raise ValueError("strict swap-periodic instances require room for three extra assignments")
         if num_variables < 2 or num_values < 2:
             raise ValueError("strict periodic instances require at least two variables and values")
 
 
-def _generate_layered_periodic_source(
+def _generate_swap_periodic_source(
     *,
     num_variables: int,
     num_values: int,
@@ -310,574 +239,163 @@ def _generate_layered_periodic_source(
     max_extra_assignments: int,
     periodic_constant_probability: float,
     query_mode: QueryMode,
+    distinct_initial_values: bool,
     rng: random.Random,
 ) -> StateTrackingInstance:
-    """Generate balanced copy layers with deep dependencies for every variable.
+    """Generate a one-pool program whose real variables are permuted via TMP.
 
-    Variables are split into two equally sized banks. Each half-layer copies a
-    value-changing permutation from the stable source bank into the other bank.
-    Every bank therefore retains one copy of every lane value, while all final
-    variables receive repeated eager-copy updates. This avoids the usual
-    max-depth-only profile in which one long chain coexists with literal final
-    values for the remaining variables.
+    Every swap is emitted as ``TMP <- a; a <- b; b <- TMP``. Configured
+    ``num_variables`` counts only real variables; the scratch register lives at
+    the following index. Constant mix-ins target real variables only and are
+    placed early enough that balanced later swaps can rebuild their chains.
     """
 
-    extra_count = rng.randint(min_extra_assignments, max_extra_assignments)
-    bank_size = num_variables // 2
-    for _ in range(10_000):
-        # Logical bank membership is deliberately independent of rendered
-        # variable position. This prevents a fixed prefix/suffix of variables
-        # from becoming a shortcut for the next copy layer.
-        bank_members = list(range(num_variables))
-        rng.shuffle(bank_members)
-        banks = (bank_members[:bank_size], bank_members[bank_size:])
-        lane_values = rng.sample(range(num_values), bank_size)
-        state = [0] * num_variables
-        for variable, value in zip(banks[0], lane_values, strict=True):
-            state[variable] = value
-        for variable, value in zip(banks[1], lane_values, strict=True):
-            state[variable] = value
-        initial_state = tuple(state)
-        variable_order = list(range(num_variables))
-        rng.shuffle(variable_order)
-        operations: list[Operation] = [
-            AssignConstant(target=variable, value=state[variable]) for variable in variable_order
-        ]
+    extra_count = rng.randint(max(3, min_extra_assignments), max_extra_assignments)
+    constant_count = min(round(periodic_constant_probability * extra_count), extra_count - 3)
+    reference_count = extra_count - constant_count
+    swap_count = reference_count // 3
+    scratch_load_count = reference_count - 3 * swap_count
+    if swap_count < 1:
+        raise ValueError("swap-periodic generation requires room for at least one complete swap")
 
-        planned_copies: list[AssignVariable] = []
-        remaining = extra_count
-        while remaining:
-            receiver_bank = rng.randrange(2)
-            sender_bank = 1 - receiver_bank
-            receiver_variables = banks[receiver_bank]
-            sender_variables = banks[sender_bank]
-            lane_permutation = _random_derangement(bank_size, rng)
-            receiver_order = list(range(bank_size))
-            rng.shuffle(receiver_order)
-            first_updates = min(bank_size, remaining)
-            for lane in receiver_order[:first_updates]:
-                source = sender_variables[lane_permutation[lane]]
-                target = receiver_variables[lane]
-                planned_copies.append(AssignVariable(target=target, source=source))
-            remaining -= first_updates
-            if not remaining:
-                break
+    temporary = num_variables
+    initial_real_values = _diverse_initial_values(
+        num_variables=num_variables,
+        num_values=num_values,
+        distinct=distinct_initial_values,
+        rng=rng,
+    )
+    state = [*initial_real_values, rng.randrange(num_values)]
+    initial_order = list(range(num_variables + 1))
+    rng.shuffle(initial_order)
+    operations: list[Operation] = [
+        AssignConstant(target=variable, value=state[variable]) for variable in initial_order
+    ]
 
-            # Copy each newly permuted receiver lane back into its paired
-            # sender lane. At a completed round, every final value again occurs
-            # exactly once in each bank, and the two positions in each hidden
-            # pair share an initial value as well as a final value.
-            sender_order = list(range(bank_size))
-            rng.shuffle(sender_order)
-            second_updates = min(bank_size, remaining)
-            for lane in sender_order[:second_updates]:
-                source = receiver_variables[lane]
-                target = sender_variables[lane]
-                planned_copies.append(AssignVariable(target=target, source=source))
-            remaining -= second_updates
+    pairs = _balanced_swap_pairs(
+        num_variables=num_variables,
+        count=swap_count,
+        rng=rng,
+    )
+    future_swaps = [0] * num_variables
+    for left, right in pairs:
+        future_swaps[left] += 1
+        future_swaps[right] += 1
 
-        constant_indices = _layered_constant_indices(
-            planned_copies,
-            num_variables=num_variables,
-            probability=periodic_constant_probability,
-            rng=rng,
-        )
-        last_constant_values: list[int | None] = [None] * num_variables
-        for index, copy in enumerate(planned_copies):
-            operation: Operation = copy
-            if index in constant_indices:
-                # A reset must change the live value; otherwise it creates an
-                # aperiodic-looking assignment without actually mixing in new
-                # value information.
-                value = rng.randrange(num_values - 1)
-                if value >= state[copy.target]:
-                    value += 1
-                operation = AssignConstant(target=copy.target, value=value)
-                last_constant_values[copy.target] = value
+    # Scratch-only prefix operations consume assignment budgets that are not a
+    # multiple of three without changing the real-variable permutation.
+    for _ in range(scratch_load_count):
+        source = rng.randrange(num_variables)
+        operation = AssignVariable(target=temporary, source=source)
+        operations.append(operation)
+        _apply(operation, state)
+
+    injections: list[int] = []
+    if constant_count:
+        cutoff = max(1, min(swap_count, round(0.8 * swap_count)))
+        injections = [index * cutoff // constant_count for index in range(constant_count)]
+    injection_counts = Counter(injections)
+    reset_counts = [0] * num_variables
+
+    for swap_index, (left, right) in enumerate(pairs):
+        for _ in range(injection_counts[swap_index]):
+            best_future = max(future_swaps)
+            candidates = [
+                variable
+                for variable, count in enumerate(future_swaps)
+                if count == best_future
+            ]
+            fewest_resets = min(reset_counts[variable] for variable in candidates)
+            candidates = [
+                variable
+                for variable in candidates
+                if reset_counts[variable] == fewest_resets
+            ]
+            target = rng.choice(candidates)
+            live_values = set(state[:num_variables])
+            novel_values = [value for value in range(num_values) if value not in live_values]
+            choices = novel_values or [
+                value for value in range(num_values) if value != state[target]
+            ]
+            operation = AssignConstant(target=target, value=rng.choice(choices))
             operations.append(operation)
             _apply(operation, state)
+            reset_counts[target] += 1
 
-        if (
-            all(final != literal for final, literal in zip(state, initial_state, strict=True))
-            and all(
-                final != literal
-                for final, literal in zip(state, last_constant_values, strict=True)
-                if literal is not None
-            )
-        ):
-            query = _choose_query(num_variables=num_variables, query_mode=query_mode, rng=rng)
-            return StateTrackingInstance.create(
-                complexity=Complexity.PERIODIC,
-                num_variables=num_variables,
-                num_values=num_values,
-                operations=tuple(operations),
-                query=query,
-                final_state=tuple(state),
-            )
-    raise RuntimeError("could not avoid last-literal anchors in layered periodic generation")
+        swap_operations = (
+            AssignVariable(target=temporary, source=left),
+            AssignVariable(target=left, source=right),
+            AssignVariable(target=right, source=temporary),
+        )
+        for operation in swap_operations:
+            operations.append(operation)
+            _apply(operation, state)
+        future_swaps[left] -= 1
+        future_swaps[right] -= 1
 
-
-def _layered_constant_indices(
-    planned_copies: list[AssignVariable],
-    *,
-    num_variables: int,
-    probability: float,
-    rng: random.Random,
-) -> set[int]:
-    """Place reset assignments where their targets have time to recover depth.
-
-    Injections are spread through the early 80% of a trace and, within each
-    segment, prefer targets with the most later copy updates. This retains an
-    exact mixture rate while reserving a copy-only suffix for dependency
-    recovery.
-    """
-
-    count = round(probability * len(planned_copies))
-    if not count:
-        return set()
-    # Spread resets through the leading portion of the trace, leaving a suffix
-    # at least as large as the requested mixture rate for every lineage to
-    # recover through copy-only updates. ``max`` keeps the routine valid for
-    # high probabilities and very short traces.
-    cutoff = max(
-        count,
-        min(
-            int((1 - probability) * len(planned_copies)),
-            len(planned_copies) - num_variables,
-        ),
+    query = _choose_query(
+        num_variables=num_variables + 1,
+        query_mode=query_mode,
+        rng=rng,
     )
-    later_target_updates = [0] * len(planned_copies)
-    target_counts = [0] * num_variables
-    for index in range(len(planned_copies) - 1, -1, -1):
-        target = planned_copies[index].target
-        later_target_updates[index] = target_counts[target]
-        target_counts[target] += 1
-    selected: set[int] = set()
-    for bucket in range(count):
-        start = bucket * cutoff // count
-        end = (bucket + 1) * cutoff // count
-        candidates = [index for index in range(start, end) if index not in selected]
-        best = max(later_target_updates[index] for index in candidates)
-        selected.add(rng.choice([index for index in candidates if later_target_updates[index] == best]))
-    return selected
+    return StateTrackingInstance.create(
+        complexity=Complexity.PERIODIC,
+        num_variables=num_variables,
+        num_values=num_values,
+        operations=tuple(operations),
+        query=query,
+        final_state=tuple(state),
+        temporary_variable=temporary,
+    )
 
 
-def _random_derangement(size: int, rng: random.Random) -> list[int]:
-    indices = list(range(size))
-    while True:
-        rng.shuffle(indices)
-        if all(index != value for index, value in enumerate(indices)):
-            return indices.copy()
-
-
-def _initial_values(
+def _diverse_initial_values(
     *,
     num_variables: int,
     num_values: int,
     distinct: bool,
-    require_diversity: bool,
     rng: random.Random,
 ) -> list[int]:
+    """Create a balanced, maximally diverse real-variable value pool."""
+
     if distinct:
         return rng.sample(range(num_values), num_variables)
-    values = [rng.randrange(num_values) for _ in range(num_variables)]
-    if require_diversity and len(set(values)) == 1:
-        values[rng.randrange(num_variables)] = (values[0] + 1) % num_values
+    diversity = min(num_variables, num_values)
+    vocabulary = rng.sample(range(num_values), diversity)
+    values = [vocabulary[index % diversity] for index in range(num_variables)]
+    rng.shuffle(values)
     return values
 
 
-def _value_aware_periodic_operation(
+def _balanced_swap_pairs(
     *,
-    state: list[int],
-    dependency_depths: list[int],
-    num_values: int,
-    allow_self_reference: bool,
-    constant_probability: float,
-    desired_diversity: int,
-    remaining_after: int,
+    num_variables: int,
+    count: int,
     rng: random.Random,
-) -> Operation:
-    """Choose a value-changing update while retaining diverse live lineages.
+) -> list[tuple[int, int]]:
+    """Choose transpositions that keep real-variable participation balanced."""
 
-    Copy candidates normally preserve the initial number of distinct live
-    values. When that is impossible (notably with two variables), a copy may
-    temporarily collapse the state only if a later operation can restore its
-    diversity. Constants steer the trace back to the desired diversity and
-    preferentially reset shallow variables so deep provenance survives.
-    """
-
-    value_counts = Counter(state)
-    exact_copy = _choose_periodic_copy(
-        state=state,
-        desired_diversity=desired_diversity,
-        dependency_depths=dependency_depths,
-        exact=True,
-        rng=rng,
-        choose=False,
-        value_counts=value_counts,
-    )
-    exact_constant = _choose_periodic_constant(
-        state=state,
-        num_values=num_values,
-        desired_diversity=desired_diversity,
-        dependency_depths=dependency_depths,
-        rng=rng,
-        choose=False,
-        value_counts=value_counts,
-    )
-    current_diversity = len(value_counts)
-
-    if current_diversity != desired_diversity:
-        if exact_constant is not None:
-            chosen = _choose_periodic_constant(
-                state=state,
-                num_values=num_values,
-                desired_diversity=desired_diversity,
-                dependency_depths=dependency_depths,
-                rng=rng,
-                value_counts=value_counts,
-            )
-            assert chosen is not None
-            return chosen
-        if exact_copy is not None:
-            chosen = _choose_periodic_copy(
-                state=state,
-                desired_diversity=desired_diversity,
-                dependency_depths=dependency_depths,
-                exact=True,
-                rng=rng,
-                value_counts=value_counts,
-            )
-            assert chosen is not None
-            return chosen
-
-    choose_constant = rng.random() < constant_probability
-    if choose_constant and exact_constant is not None:
-        chosen = _choose_periodic_constant(
-            state=state,
-            num_values=num_values,
-            desired_diversity=desired_diversity,
-            dependency_depths=dependency_depths,
-            rng=rng,
-            value_counts=value_counts,
-        )
-        assert chosen is not None
-        return chosen
-    if exact_copy is not None:
-        chosen = _choose_periodic_copy(
-            state=state,
-            desired_diversity=desired_diversity,
-            dependency_depths=dependency_depths,
-            exact=True,
-            rng=rng,
-            value_counts=value_counts,
-        )
-        assert chosen is not None
-        return chosen
-    any_copy = _choose_periodic_copy(
-        state=state,
-        desired_diversity=desired_diversity,
-        dependency_depths=dependency_depths,
-        exact=None,
-        rng=rng,
-        choose=False,
-        value_counts=value_counts,
-    )
-    if any_copy is not None and remaining_after > 0 and not choose_constant:
-        chosen = _choose_periodic_copy(
-            state=state,
-            desired_diversity=desired_diversity,
-            dependency_depths=dependency_depths,
-            exact=None,
-            rng=rng,
-            value_counts=value_counts,
-        )
-        assert chosen is not None
-        return chosen
-    if exact_constant is not None:
-        chosen = _choose_periodic_constant(
-            state=state,
-            num_values=num_values,
-            desired_diversity=desired_diversity,
-            dependency_depths=dependency_depths,
-            rng=rng,
-            value_counts=value_counts,
-        )
-        assert chosen is not None
-        return chosen
-
-    # Unusual non-strict configurations can begin with only one live value, or
-    # request as many distinct values as the value vocabulary contains. Choose
-    # the operation that gets closest to the target and let subsequent steps
-    # repair the state.
-    copy_candidates = _periodic_copy_candidates(
-        state=state,
-        desired_diversity=desired_diversity,
-    )
-    if not allow_self_reference:
-        copy_candidates = [
-            candidate for candidate in copy_candidates if candidate[0] != candidate[1]
+    participation = [0] * num_variables
+    pairs: list[tuple[int, int]] = []
+    for _ in range(count):
+        minimum = min(participation)
+        first_candidates = [
+            variable for variable, value in enumerate(participation) if value == minimum
         ]
-    constant_candidates = _periodic_constant_candidates(
-        state=state,
-        num_values=num_values,
-        desired_diversity=desired_diversity,
-    )
-    candidates: list[tuple[Operation, int]] = [
-        (AssignVariable(target=target, source=source), result_diversity)
-        for target, source, _, result_diversity in copy_candidates
-    ]
-    candidates.extend(
-        (operation, result_diversity)
-        for operation, _, result_diversity in constant_candidates
-    )
-    if not candidates:
-        return AssignConstant(
-            target=rng.randrange(len(state)),
-            value=rng.randrange(num_values),
+        left = rng.choice(first_candidates)
+        other_minimum = min(
+            value for variable, value in enumerate(participation) if variable != left
         )
-    closest_distance = min(
-        abs(result_diversity - desired_diversity) for _, result_diversity in candidates
-    )
-    closest = [
-        operation
-        for operation, result_diversity in candidates
-        if abs(result_diversity - desired_diversity) == closest_distance
-    ]
-    return rng.choice(closest)
-
-
-def _choose_periodic_copy(
-    *,
-    state: list[int],
-    desired_diversity: int,
-    dependency_depths: list[int],
-    exact: bool | None,
-    rng: random.Random,
-    choose: bool = True,
-    value_counts: Counter[int] | None = None,
-) -> AssignVariable | None:
-    """Choose a dependency-biased copy without materializing O(n²) candidates."""
-
-    if value_counts is None:
-        value_counts = Counter(state)
-    current_diversity = len(value_counts)
-    eligible_targets = [
-        target
-        for target, value in enumerate(state)
-        if exact is None
-        or (current_diversity - (value_counts[value] == 1) == desired_diversity) is exact
-    ]
-    if not eligible_targets:
-        return None
-
-    target_values = {state[target] for target in eligible_targets}
-    max_source_depth = max(
-        (
-            dependency_depths[source]
-            for source, value in enumerate(state)
-            if len(target_values) > 1 or value not in target_values
-        ),
-        default=None,
-    )
-    if max_source_depth is None:
-        return None
-    source_counts: Counter[int] = Counter(
-        state[source]
-        for source in range(len(state))
-        if dependency_depths[source] == max_source_depth
-    )
-    total_sources = sum(source_counts.values())
-    eligible_targets = [
-        target
-        for target in eligible_targets
-        if total_sources > source_counts[state[target]]
-    ]
-    if not eligible_targets:
-        return None
-    min_target_depth = min(dependency_depths[target] for target in eligible_targets)
-    eligible_targets = [
-        target for target in eligible_targets if dependency_depths[target] == min_target_depth
-    ]
-    if not choose:
-        target = eligible_targets[0]
-        source = next(
-            source
-            for source, value in enumerate(state)
-            if dependency_depths[source] == max_source_depth and value != state[target]
-        )
-        return AssignVariable(target=target, source=source)
-
-    candidate_count = sum(total_sources - source_counts[state[target]] for target in eligible_targets)
-    selected = rng.randrange(candidate_count)
-    for target in eligible_targets:
-        target_count = total_sources - source_counts[state[target]]
-        if selected >= target_count:
-            selected -= target_count
-            continue
-        for source, value in enumerate(state):
-            if dependency_depths[source] != max_source_depth or value == state[target]:
-                continue
-            if selected == 0:
-                return AssignVariable(target=target, source=source)
-            selected -= 1
-    raise AssertionError("copy candidate selection fell out of range")
-
-
-def _choose_periodic_constant(
-    *,
-    state: list[int],
-    num_values: int,
-    desired_diversity: int,
-    dependency_depths: list[int],
-    rng: random.Random,
-    choose: bool = True,
-    value_counts: Counter[int] | None = None,
-) -> AssignConstant | None:
-    """Choose an exact diversity-preserving constant in O(n + num_values)."""
-
-    if value_counts is None:
-        value_counts = Counter(state)
-    current_diversity = len(value_counts)
-    present_values = set(value_counts)
-    absent_count = num_values - current_diversity
-
-    def candidate_count(target: int) -> int:
-        required_absent = (
-            desired_diversity - current_diversity + (value_counts[state[target]] == 1)
-        )
-        if required_absent == 1:
-            return absent_count
-        if required_absent == 0:
-            return current_diversity - 1
-        return 0
-
-    eligible_targets = [target for target in range(len(state)) if candidate_count(target)]
-    if not eligible_targets:
-        return None
-    min_target_depth = min(dependency_depths[target] for target in eligible_targets)
-    eligible_targets = [
-        target for target in eligible_targets if dependency_depths[target] == min_target_depth
-    ]
-    if not choose:
-        target = eligible_targets[0]
-        required_absent = (
-            desired_diversity - current_diversity + (value_counts[state[target]] == 1)
-        )
-        value = next(
-            value
-            for value in range(num_values)
-            if value != state[target]
-            and ((value not in present_values) == bool(required_absent))
-        )
-        return AssignConstant(target=target, value=value)
-
-    selected = rng.randrange(sum(candidate_count(target) for target in eligible_targets))
-    for target in eligible_targets:
-        count = candidate_count(target)
-        if selected >= count:
-            selected -= count
-            continue
-        required_absent = (
-            desired_diversity - current_diversity + (value_counts[state[target]] == 1)
-        )
-        for value in range(num_values):
-            if value == state[target] or ((value not in present_values) != bool(required_absent)):
-                continue
-            if selected == 0:
-                return AssignConstant(target=target, value=value)
-            selected -= 1
-    raise AssertionError("constant candidate selection fell out of range")
-
-
-def _periodic_copy_candidates(
-    *,
-    state: list[int],
-    desired_diversity: int,
-) -> list[tuple[int, int, bool, int]]:
-    """Return changing ``(target, source, is_exact, result_diversity)`` copies."""
-
-    value_counts = Counter(state)
-    current_diversity = len(value_counts)
-    candidates = []
-    for target in range(len(state)):
-        for source in range(len(state)):
-            if target == source or state[target] == state[source]:
-                continue
-            result_diversity = current_diversity - (value_counts[state[target]] == 1)
-            candidates.append(
-                (target, source, result_diversity == desired_diversity, result_diversity)
-            )
-    return candidates
-
-
-def _periodic_constant_candidates(
-    *,
-    state: list[int],
-    num_values: int,
-    desired_diversity: int,
-) -> list[tuple[AssignConstant, bool, int]]:
-    """Return changing constants and their effect on live-value diversity."""
-
-    value_counts = Counter(state)
-    current_diversity = len(value_counts)
-    candidates = []
-    for target in range(len(state)):
-        for value in range(num_values):
-            if value == state[target]:
-                continue
-            result_diversity = (
-                current_diversity
-                - (value_counts[state[target]] == 1)
-                + (value_counts[value] == 0)
-            )
-            candidates.append(
-                (
-                    AssignConstant(target=target, value=value),
-                    result_diversity == desired_diversity,
-                    result_diversity,
-                )
-            )
-    return candidates
-
-
-def _choose_dependency_biased_copy(
-    candidates: list[tuple[int, int, bool, int]],
-    *,
-    dependency_depths: list[int],
-    rng: random.Random,
-) -> AssignVariable:
-    max_source_depth = max(dependency_depths[source] for _, source, _, _ in candidates)
-    deepest = [
-        candidate
-        for candidate in candidates
-        if dependency_depths[candidate[1]] == max_source_depth
-    ]
-    min_target_depth = min(dependency_depths[target] for target, _, _, _ in deepest)
-    target, source, _, _ = rng.choice(
-        [
-            candidate
-            for candidate in deepest
-            if dependency_depths[candidate[0]] == min_target_depth
+        second_candidates = [
+            variable
+            for variable, value in enumerate(participation)
+            if variable != left and value == other_minimum
         ]
-    )
-    return AssignVariable(target=target, source=source)
-
-
-def _choose_dependency_preserving_constant(
-    candidates: list[tuple[AssignConstant, bool, int]],
-    *,
-    dependency_depths: list[int],
-    rng: random.Random,
-) -> AssignConstant:
-    min_target_depth = min(dependency_depths[operation.target] for operation, _, _ in candidates)
-    return rng.choice(
-        [
-            operation
-            for operation, _, _ in candidates
-            if dependency_depths[operation.target] == min_target_depth
-        ]
-    )
+        right = rng.choice(second_candidates)
+        participation[left] += 1
+        participation[right] += 1
+        pairs.append((left, right))
+    return pairs
 
 
 def _apply(operation: Operation, state: list[int]) -> None:
@@ -885,13 +403,6 @@ def _apply(operation: Operation, state: list[int]) -> None:
         state[operation.target] = operation.value
     else:
         state[operation.target] = state[operation.source]
-
-
-def _apply_dependency(operation: Operation, dependency_depths: list[int]) -> None:
-    if isinstance(operation, AssignConstant):
-        dependency_depths[operation.target] = 0
-    else:
-        dependency_depths[operation.target] = dependency_depths[operation.source] + 1
 
 
 def _choose_query(*, num_variables: int, query_mode: QueryMode, rng: random.Random) -> tuple[int, ...]:

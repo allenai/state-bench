@@ -52,7 +52,8 @@ def read_minimum_depths(path: Path, *, mixture: str) -> list[dict[str, float | s
             if record["complexity"] != "periodic":
                 continue
             depths = record["final_dependency_lengths"]
-            query = record["query"]
+            temporary = record.get("temporary_variable")
+            query = [variable for variable in record["query"] if variable != temporary]
             minimum = min(int(depths[variable]) for variable in query)
             rows.append({"Aperiodic mix": mixture, "Minimum dependency length": minimum})
     if not rows:

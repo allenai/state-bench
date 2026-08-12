@@ -4,6 +4,7 @@ renderer: template
 
 vocabulary:
   variables: [cell A1, cell B1, cell C1, cell D1, cell E1, cell F1, cell G1, cell H1, cell I1, cell J1, cell K1, cell L1, cell M1, cell N1, cell O1, cell P1]
+  temporary_variable: scratch cell
   values: ["1", "2", "3", "4", "5", "6", "7", "8", "9", "10"]
 
 templates:

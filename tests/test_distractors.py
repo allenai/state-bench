@@ -6,7 +6,7 @@ from collections import Counter
 import pytest
 
 from state_bench.distractors import _choose_depth_weighted_answers, generate_incorrect_states
-from state_bench.generation import generate_instance
+from state_bench.generation import derive_variants, generate_instance
 from state_bench.model import AssignConstant, AssignVariable, Complexity, StateTrackingInstance
 
 
@@ -64,11 +64,11 @@ def test_periodic_distractors_match_initial_value_and_position_cues() -> None:
         num_values=10,
         min_extra_assignments=64,
         max_extra_assignments=64,
-        periodic_sampling_method="layered",
+        periodic_sampling_method="swap",
         rng=random.Random(19),
     )
-    initial = [None] * instance.num_variables
-    for operation in instance.operations[: instance.num_variables]:
+    initial = [None] * instance.num_registers
+    for operation in instance.operations[: instance.num_initial_assignments]:
         assert isinstance(operation, AssignConstant)
         initial[operation.target] = operation.value
     correct = tuple(instance.final_state[variable] for variable in instance.query)
@@ -76,7 +76,7 @@ def test_periodic_distractors_match_initial_value_and_position_cues() -> None:
         value == initial[variable]
         for variable, value in zip(instance.query, correct, strict=True)
     )
-    last_sources = [None] * instance.num_variables
+    last_sources = [None] * instance.num_registers
     for operation in instance.operations:
         if isinstance(operation, AssignVariable):
             last_sources[operation.target] = operation.source
@@ -93,6 +93,7 @@ def test_periodic_distractors_match_initial_value_and_position_cues() -> None:
 
     for state in states:
         answer = tuple(state[variable] for variable in instance.query)
+        assert state[instance.temporary_variable] == instance.final_state[instance.temporary_variable]
         assert set(answer) == set(correct)
         assert Counter(answer) == Counter(correct)
         assert sum(
@@ -121,6 +122,29 @@ def test_depth_weighted_periodic_distractors_prefer_to_move_deep_coordinates() -
         deep_selections += selected == [deep_move]
 
     assert deep_selections > 390
+
+
+def test_tmp_is_fixed_in_alternatives_for_every_derived_complexity() -> None:
+    source = generate_instance(
+        complexity=Complexity.PERIODIC,
+        num_variables=4,
+        num_values=10,
+        min_extra_assignments=64,
+        max_extra_assignments=64,
+        periodic_constant_probability=0.1,
+        rng=random.Random(23),
+    )
+    for instance in derive_variants(source):
+        states = generate_incorrect_states(
+            instance,
+            num_distractors=4,
+            rng=random.Random(29),
+        )
+        assert states
+        assert all(
+            state[instance.temporary_variable] == instance.final_state[instance.temporary_variable]
+            for state in states
+        )
 
 
 def _equality_pattern(values: tuple[int, ...]) -> tuple[int, ...]:

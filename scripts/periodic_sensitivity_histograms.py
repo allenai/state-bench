@@ -96,10 +96,16 @@ def main(argv: Sequence[str] | None = None) -> None:
         for index in range(1, len(METRICS))
     )
 
-    for axis, metric in zip(axes, METRICS.values(), strict=True):
+    for axis, (field, metric) in zip(axes, METRICS.items(), strict=True):
         facet = frame[frame["Sensitivity measure"] == metric]
         values = facet["Value"].to_numpy()
-        bins = np.linspace(values.min(), values.max(), 33)
+        if field == "sensitivity_coverage":
+            bins = np.linspace(0.0, 1.0, 33)
+        elif np.isclose(values.min(), values.max()):
+            padding = max(0.05, abs(float(values.min())) * 0.05)
+            bins = np.linspace(values.min() - padding, values.max() + padding, 33)
+        else:
+            bins = np.linspace(values.min(), values.max(), 33)
         for mixture in mixtures:
             sns.histplot(
                 data=facet[facet["Aperiodic mix"] == mixture],
@@ -114,6 +120,9 @@ def main(argv: Sequence[str] | None = None) -> None:
                 ax=axis,
             )
         axis.set(title=metric, xlabel="Program sensitivity")
+        if field == "sensitivity_coverage":
+            axis.set_xlim(0.0, 1.0)
+            axis.set_xticks(np.linspace(0.0, 1.0, 6))
     axes[0].set_ylabel("Periodic sequences")
     for axis in axes[1:]:
         axis.set_ylabel("")

@@ -24,6 +24,7 @@ class RenderedExample:
     num_variables: int
     num_values: int
     surface_variables: tuple[str, ...]
+    temporary_variable: str | None
     surface_values: tuple[str, ...]
     num_assignments: int
     incorrect_completions: tuple[str, ...]
@@ -54,6 +55,7 @@ class RenderedExample:
             "num_variables": self.num_variables,
             "num_values": self.num_values,
             "surface_variables": list(self.surface_variables),
+            "temporary_variable": self.temporary_variable,
             "surface_values": list(self.surface_values),
             "num_assignments": self.num_assignments,
             "incorrect_completions": list(self.incorrect_completions),
@@ -209,6 +211,11 @@ def render_instance(
         num_variables=instance.num_variables,
         num_values=instance.num_values,
         surface_variables=surface_variables,
+        temporary_variable=(
+            surface_variables[instance.temporary_variable]
+            if instance.temporary_variable is not None
+            else None
+        ),
         surface_values=surface_values,
         num_assignments=len(instance.operations),
         incorrect_completions=incorrect_completions,
@@ -447,6 +454,8 @@ def _surface_vocabulary(
         variables = tuple(rng.sample(formatter.vocabulary.variables, instance.num_variables))
     else:
         variables = tuple(formatter.vocabulary.variables[: instance.num_variables])
+    if instance.temporary_variable is not None:
+        variables = (*variables, formatter.vocabulary.temporary_variable)
 
     if formatter.vocabulary.value_selection == "random-seven-digit":
         values = tuple(

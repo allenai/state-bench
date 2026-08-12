@@ -4,6 +4,7 @@ renderer: template
 filler_corpus_path: ../corpora/ruler-essay.txt
 
 vocabulary:
+  temporary_variable: temporary
   variable_selection: sample-without-replacement
   value_selection: random-seven-digit
   variables:

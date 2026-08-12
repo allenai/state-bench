@@ -46,7 +46,13 @@ type Operation = AssignConstant | AssignVariable
 
 @dataclass(frozen=True, slots=True)
 class StateTrackingInstance:
-    """An evaluated semantic trace, with no surface-form decisions."""
+    """An evaluated semantic trace, with no surface-form decisions.
+
+    ``num_variables`` counts ordinary task variables. Periodic source traces
+    may additionally carry one scratch register at ``temporary_variable``;
+    that register participates in operations and queries but is not part of
+    the configured variable-count axis.
+    """
 
     instance_id: str
     complexity: Complexity
@@ -55,6 +61,15 @@ class StateTrackingInstance:
     operations: tuple[Operation, ...]
     query: tuple[int, ...]
     final_state: tuple[int, ...]
+    temporary_variable: int | None
+
+    @property
+    def num_registers(self) -> int:
+        return self.num_variables + (self.temporary_variable is not None)
+
+    @property
+    def num_initial_assignments(self) -> int:
+        return self.num_registers
 
     @classmethod
     def create(
@@ -66,7 +81,13 @@ class StateTrackingInstance:
         operations: tuple[Operation, ...],
         query: tuple[int, ...],
         final_state: tuple[int, ...],
+        temporary_variable: int | None = None,
     ) -> StateTrackingInstance:
+        num_registers = num_variables + (temporary_variable is not None)
+        if temporary_variable is not None and temporary_variable != num_variables:
+            raise ValueError("the temporary variable must immediately follow ordinary variables")
+        if len(final_state) != num_registers:
+            raise ValueError("final_state length must equal the number of registers")
         semantic_record = {
             "complexity": complexity.value,
             "num_variables": num_variables,
@@ -74,6 +95,7 @@ class StateTrackingInstance:
             "operations": [operation.to_record() for operation in operations],
             "query": list(query),
             "final_state": list(final_state),
+            "temporary_variable": temporary_variable,
         }
         digest = hashlib.sha256(
             json.dumps(semantic_record, sort_keys=True, separators=(",", ":")).encode()
@@ -86,6 +108,7 @@ class StateTrackingInstance:
             operations=operations,
             query=query,
             final_state=final_state,
+            temporary_variable=temporary_variable,
         )
 
     @classmethod
@@ -103,6 +126,7 @@ class StateTrackingInstance:
             "operations": [operation.to_record() for operation in self.operations],
             "query": list(self.query),
             "final_state": list(self.final_state),
+            "temporary_variable": self.temporary_variable,
         }
 
 
@@ -124,4 +148,9 @@ def semantic_record_from_dict(record: dict[str, Any]) -> dict[str, Any]:
         "operations": tuple(operations),
         "query": tuple(int(value) for value in record["query"]),
         "final_state": tuple(int(value) for value in record["final_state"]),
+        "temporary_variable": (
+            int(record["temporary_variable"])
+            if record.get("temporary_variable") is not None
+            else None
+        ),
     }

@@ -105,10 +105,11 @@ def dependency_lengths(
 def dependency_summary(instance: StateTrackingInstance) -> DependencySummary:
     """Summarize dependency lengths over all variables in the final state."""
 
-    lengths = dependency_lengths(
-        num_variables=instance.num_variables,
+    register_lengths = dependency_lengths(
+        num_variables=instance.num_registers,
         operations=instance.operations,
     )
+    lengths = register_lengths[: instance.num_variables]
     frequencies = Counter(lengths)
     highest_frequency = max(frequencies.values())
     mode = min(depth for depth, count in frequencies.items() if count == highest_frequency)
@@ -121,48 +122,61 @@ def dependency_summary(instance: StateTrackingInstance) -> DependencySummary:
 
 
 def sensitivity_summary(instance: StateTrackingInstance) -> SensitivitySummary:
-    """Summarize exact suffix influence from every fully initialized state.
+    """Summarize exact suffix influence at semantic operation boundaries.
 
-    At each boundary after all variables have been initialized, this asks which
-    queried final outputs would change if the current value of a variable were
-    replaced with a distinct value. A reverse pass propagates query-output
-    bitsets through variable copies and kills them at constant assignments.
+    The scratch register is excluded from both inputs and queried outputs. Each
+    three-assignment TMP swap is sampled only after the complete swap, while
+    ordinary constant assignments remain individual semantic operations. A
+    reverse pass propagates query-output bitsets through every primitive copy
+    and kills them at constant assignments.
     """
 
     start = _fully_initialized_boundary(
-        num_variables=instance.num_variables,
+        num_variables=instance.num_registers,
         operations=instance.operations,
     )
-    output_bits = [0] * instance.num_variables
-    for output_index, variable in enumerate(instance.query):
-        _validate_variable(variable, instance.num_variables)
+    queried_variables = tuple(
+        variable for variable in instance.query if variable != instance.temporary_variable
+    )
+    output_bits = [0] * instance.num_registers
+    for output_index, variable in enumerate(queried_variables):
+        _validate_variable(variable, instance.num_registers)
         output_bits[variable] |= 1 << output_index
 
-    total_affected_outputs = sum(bits.bit_count() for bits in output_bits)
-    live_variables = sum(bits != 0 for bits in output_bits)
-    aggregate_affected_outputs = total_affected_outputs
-    aggregate_live_variables = live_variables
-    state_count = 1
+    total_affected_outputs = sum(
+        bits.bit_count() for bits in output_bits[: instance.num_variables]
+    )
+    live_variables = sum(bits != 0 for bits in output_bits[: instance.num_variables])
+    sample_boundaries = _sensitivity_sample_boundaries(instance, start=start)
+    aggregate_affected_outputs = 0
+    aggregate_live_variables = 0
+    state_count = 0
+    if len(instance.operations) in sample_boundaries:
+        aggregate_affected_outputs += total_affected_outputs
+        aggregate_live_variables += live_variables
+        state_count += 1
 
     for index in range(len(instance.operations) - 1, -1, -1):
         operation = instance.operations[index]
-        _validate_variable(operation.target, instance.num_variables)
+        _validate_variable(operation.target, instance.num_registers)
         if isinstance(operation, AssignConstant):
             total_affected_outputs, live_variables = _replace_influence(
                 output_bits,
                 operation.target,
                 0,
+                included=operation.target < instance.num_variables,
                 total_affected_outputs=total_affected_outputs,
                 live_variables=live_variables,
             )
         else:
-            _validate_variable(operation.source, instance.num_variables)
+            _validate_variable(operation.source, instance.num_registers)
             if operation.source != operation.target:
                 target_bits = output_bits[operation.target]
                 total_affected_outputs, live_variables = _replace_influence(
                     output_bits,
                     operation.target,
                     0,
+                    included=operation.target < instance.num_variables,
                     total_affected_outputs=total_affected_outputs,
                     live_variables=live_variables,
                 )
@@ -170,25 +184,81 @@ def sensitivity_summary(instance: StateTrackingInstance) -> SensitivitySummary:
                     output_bits,
                     operation.source,
                     output_bits[operation.source] | target_bits,
+                    included=operation.source < instance.num_variables,
                     total_affected_outputs=total_affected_outputs,
                     live_variables=live_variables,
                 )
-        if index >= start:
+        if index in sample_boundaries:
             aggregate_affected_outputs += total_affected_outputs
             aggregate_live_variables += live_variables
             state_count += 1
 
     denominator = state_count * instance.num_variables
+    output_count = len(queried_variables)
     return SensitivitySummary(
         sensitivity_state_count=state_count,
-        sensitivity_output_count=len(instance.query),
-        sensitivity_density=aggregate_affected_outputs / (denominator * len(instance.query)),
+        sensitivity_output_count=output_count,
+        sensitivity_density=(
+            aggregate_affected_outputs / (denominator * output_count) if output_count else 0.0
+        ),
         sensitivity_coverage=aggregate_live_variables / denominator,
         mean_live_fanout=(
             aggregate_affected_outputs / aggregate_live_variables
             if aggregate_live_variables
             else 0.0
         ),
+    )
+
+
+def _sensitivity_sample_boundaries(
+    instance: StateTrackingInstance,
+    *,
+    start: int,
+) -> frozenset[int]:
+    """Return operation-prefix lengths representing complete semantic steps."""
+
+    if instance.temporary_variable is None:
+        return frozenset(range(start, len(instance.operations) + 1))
+
+    boundaries = {start}
+    index = start
+    while index < len(instance.operations):
+        if _is_tmp_swap(instance, index=index):
+            index += 3
+            boundaries.add(index)
+        elif instance.operations[index].target == instance.temporary_variable:
+            # Budget-padding scratch loads do not change ordinary state.
+            index += 1
+        else:
+            index += 1
+            boundaries.add(index)
+    return frozenset(boundaries)
+
+
+def _is_tmp_swap(instance: StateTrackingInstance, *, index: int) -> bool:
+    """Recognize one TMP-expanded swap in a source or structurally derived trace."""
+
+    if instance.temporary_variable is None or index + 2 >= len(instance.operations):
+        return False
+    load, replace, restore = instance.operations[index : index + 3]
+    left = replace.target
+    right = restore.target
+    if not (
+        load.target == instance.temporary_variable
+        and 0 <= left < instance.num_variables
+        and 0 <= right < instance.num_variables
+        and left != right
+    ):
+        return False
+    if all(isinstance(operation, AssignConstant) for operation in (load, replace, restore)):
+        return True
+    return (
+        isinstance(load, AssignVariable)
+        and isinstance(replace, AssignVariable)
+        and isinstance(restore, AssignVariable)
+        and load.source == left
+        and replace.source == right
+        and restore.source == instance.temporary_variable
     )
 
 
@@ -209,6 +279,7 @@ def _replace_influence(
     variable: int,
     replacement: int,
     *,
+    included: bool,
     total_affected_outputs: int,
     live_variables: int,
 ) -> tuple[int, int]:
@@ -218,6 +289,8 @@ def _replace_influence(
     if previous == replacement:
         return total_affected_outputs, live_variables
     output_bits[variable] = replacement
+    if not included:
+        return total_affected_outputs, live_variables
     return (
         total_affected_outputs + replacement.bit_count() - previous.bit_count(),
         live_variables + (replacement != 0) - (previous != 0),

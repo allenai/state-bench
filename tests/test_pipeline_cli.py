@@ -116,7 +116,7 @@ def _small_experiment(tmp_path: Path) -> Path:
             "complexity": "periodic",
             "num_variables": [2],
             "num_values": 10,
-            "extra_assignments": {"min": 1, "max": 2},
+            "extra_assignments": {"min": 3, "max": 4},
         }
     ]
     source["formatters"] = [
@@ -150,10 +150,12 @@ def test_build_preserves_ids_across_formatters(tmp_path: Path) -> None:
         assert rendered_row["sensitivity_coverage"] == canonical_row["sensitivity_coverage"]
         assert rendered_row["mean_live_fanout"] == canonical_row["mean_live_fanout"]
     for row in (*integer, *cubes):
-        assert len(row["incorrect_completions"]) == 4
-        assert len(set(row["incorrect_completions"])) == 4
+        # Two real variables have exactly one non-identity permutation once
+        # TMP is held fixed.
+        assert len(row["incorrect_completions"]) == 1
+        assert len(set(row["incorrect_completions"])) == 1
         assert row["completion"] not in row["incorrect_completions"]
-        assert len(row["choices"]) == 5
+        assert len(row["choices"]) == 2
         assert row["choices"][row["correct_choice_index"]] == row["completion"]
     source_groups = {}
     for row in canonical:
@@ -360,7 +362,7 @@ def test_split_scoping_and_disjoint_generation_preserve_existing_test_bytes(
             "formatters": ["integer-code"],
             "num_variables": [2],
             "num_values": 10,
-            "extra_assignments": {"min": 1, "max": 1},
+            "extra_assignments": {"min": 3, "max": 3},
             "filler": {
                 "proportions": [0.0, 0.5],
                 "distraction_levels": ["easy"],
@@ -380,7 +382,7 @@ def test_split_scoping_and_disjoint_generation_preserve_existing_test_bytes(
     assert not (combined / "rendered/cube-painting--periodic/train.jsonl").exists()
     train_rows = read_jsonl(combined / "rendered/integer-code--periodic/train.jsonl")
     assert {row["filler_distraction"] for row in train_rows} == {None, "easy"}
-    assert {row["num_extra_assignments"] for row in train_rows} == {1}
+    assert {row["num_extra_assignments"] for row in train_rows} == {3}
 
     test_semantics = {row["instance_id"] for row in read_jsonl(combined / "canonical/test.jsonl")}
     train_semantics = {row["instance_id"] for row in read_jsonl(combined / "canonical/train.jsonl")}
@@ -415,8 +417,8 @@ def test_padded_length_sweep_appends_rows_without_changing_existing_test_rows(
             "num_values": 10,
             "extra_assignments": {
                 "distribution": "log-spaced",
-                "min": 1,
-                "max": 2,
+                "min": 3,
+                "max": 6,
                 "min_samples_per_bucket": 3,
             },
             "filler": {
@@ -450,8 +452,8 @@ def test_padded_length_sweep_appends_rows_without_changing_existing_test_rows(
             row["filler_distraction"]
         )
     assert by_depth == {
-        1: {"easy", "medium", "hard"},
-        2: {"easy", "medium", "hard"},
+        3: {"easy", "medium", "hard"},
+        6: {"easy", "medium", "hard"},
     }
 
 
@@ -797,7 +799,7 @@ def test_mixed_complexities_have_stable_parquet_schema_across_shards(tmp_path: P
             "complexity": "periodic",
             "num_variables": [2],
             "num_values": 10,
-            "extra_assignments": {"min": 1, "max": 1},
+            "extra_assignments": {"min": 3, "max": 3},
         }
     ]
     experiment.write_text(yaml.safe_dump(source, sort_keys=False), encoding="utf-8")
@@ -814,8 +816,8 @@ def test_log_spaced_schedule_uses_fixed_budget_and_records_bucket(tmp_path: Path
     source["splits"] = {"train": {"samples_per_condition": 8}}
     source["generation"]["conditions"][0]["extra_assignments"] = {
         "distribution": "log-spaced",
-        "min": 1,
-        "max": 8,
+        "min": 3,
+        "max": 24,
         "growth_factor": 2,
         "sample_decay": 0.5,
         "jitter_fraction": 0,
@@ -825,7 +827,7 @@ def test_log_spaced_schedule_uses_fixed_budget_and_records_bucket(tmp_path: Path
     output = build_dataset(load_experiment(experiment))
     rows = read_jsonl(output / "canonical/train.jsonl")
     assert len(rows) == 24
-    assert {row["target_extra_assignments"] for row in rows} == {1, 2, 4, 8}
+    assert {row["target_extra_assignments"] for row in rows} == {3, 6, 12, 24}
     assert all(row["num_extra_assignments"] == row["target_extra_assignments"] for row in rows)
 
 
@@ -838,7 +840,7 @@ def test_filler_axes_share_budget_and_can_be_scoped_to_one_formatter(tmp_path: P
             "complexity": "periodic",
             "num_variables": [2],
             "num_values": 10,
-            "extra_assignments": {"min": 1, "max": 1},
+            "extra_assignments": {"min": 3, "max": 3},
             "filler": {
                 "proportions": [0.0, 0.5],
                 "distraction_levels": ["easy", "medium", "hard"],

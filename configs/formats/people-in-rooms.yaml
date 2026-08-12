@@ -4,6 +4,7 @@ renderer: template
 
 vocabulary:
   variables: [Alice, Bob, Carol, David, Elena, Frank, Grace, Henry, Iris, James, Karen, Leo, Maya, Noah, Olivia, Peter]
+  temporary_variable: Taylor
   values: [kitchen, garden, library, office, bedroom, garage, attic, basement, hallway, studio]
 
 templates:

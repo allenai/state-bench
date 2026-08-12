@@ -109,7 +109,7 @@ class GenerationSpec(StrictModel):
     allow_self_reference: bool = False
     distinct_initial_values: bool = False
     periodic_constant_probability: float = Field(default=0.1, ge=0.0, le=1.0)
-    periodic_sampling_method: Literal["greedy", "layered"] = "greedy"
+    periodic_sampling_method: Literal["swap"] = "swap"
     conditions: list[ConditionSpec]
 
     @model_validator(mode="after")
@@ -160,19 +160,10 @@ class GenerationSpec(StrictModel):
                     and (num_variables < 2 or condition.num_values < 2)
                 ):
                     raise ValueError("strict periodic conditions need at least two variables and values")
-                if self.periodic_sampling_method == "layered":
-                    if num_variables < 6 or num_variables % 2:
-                        raise ValueError(
-                            "layered periodic sampling requires an even number of variables at least 6"
-                        )
-                    if condition.num_values < num_variables // 2:
-                        raise ValueError(
-                            "layered periodic sampling needs at least one distinct value per bank lane"
-                        )
-                    if condition.extra_assignments.min < num_variables:
-                        raise ValueError(
-                            "layered periodic sampling requires at least one extra assignment per variable"
-                        )
+                if condition.extra_assignments.max < 3:
+                    raise ValueError(
+                        "swap-periodic sampling requires room for three extra assignments"
+                    )
         return self
 
 
@@ -377,6 +368,7 @@ type TemplateValue = str | TemplateChoices
 
 class VocabularySpec(StrictModel):
     variables: list[str]
+    temporary_variable: str = Field(default="TMP", min_length=1)
     values: list[str] = []
     variable_selection: Literal["prefix", "sample-without-replacement"] = "prefix"
     value_selection: Literal["prefix", "random-seven-digit"] = "prefix"
@@ -389,6 +381,8 @@ class VocabularySpec(StrictModel):
             raise ValueError("fixed value vocabulary must not be empty")
         if len(set(self.variables)) != len(self.variables):
             raise ValueError("variable vocabulary must be unique")
+        if self.temporary_variable in self.variables:
+            raise ValueError("temporary variable must not appear in the ordinary variable vocabulary")
         if len(set(self.values)) != len(self.values):
             raise ValueError("value vocabulary must be unique")
         return self

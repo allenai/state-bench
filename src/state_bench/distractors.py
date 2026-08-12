@@ -26,25 +26,37 @@ def generate_incorrect_states(
     one-hop reading of each final copy source.
     These constraints prevent a multiple-choice solver from choosing an option
     merely because it uses unseen values, resembles the initial state less, or
-    follows only the final copy operation.
+    follows only the final copy operation. When a scratch register is present,
+    its answer coordinate is fixed to the correct value in every alternative;
+    periodic traces therefore return at most the number of unique real-variable
+    permutations (one alternative for the two-variable case).
     """
 
     if num_distractors < 0:
         raise ValueError("num_distractors must be non-negative")
     correct_answer = tuple(instance.final_state[variable] for variable in instance.query)
+    fixed_positions = {
+        index
+        for index, variable in enumerate(instance.query)
+        if variable == instance.temporary_variable
+    }
+    movable_positions = tuple(
+        index for index in range(len(correct_answer)) if index not in fixed_positions
+    )
     distinct_values = tuple(dict.fromkeys(correct_answer))
     periodic = instance.complexity is Complexity.PERIODIC
-    cue_matched_periodic = (
-        periodic and _multiset_permutations(correct_answer) - 1 >= num_distractors
-    )
+    movable_answer = tuple(correct_answer[index] for index in movable_positions)
+    periodic_available = max(0, _multiset_permutations(movable_answer) - 1)
+    target_count = min(num_distractors, periodic_available) if periodic else num_distractors
+    cue_matched_periodic = periodic and target_count > 0
     available = (
-        _multiset_permutations(correct_answer) - 1
+        periodic_available
         if cue_matched_periodic
         else perm(instance.num_values, len(distinct_values)) - 1
     )
-    if num_distractors > available:
+    if target_count > available:
         raise ValueError(
-            f"requested {num_distractors} distractors, but only {available} equality-pattern-"
+            f"requested {target_count} distractors, but only {available} equality-pattern-"
             "preserving wrong answers exist"
         )
 
@@ -74,37 +86,48 @@ def generate_incorrect_states(
             one_hop_values=one_hop_values,
             initial_agreement=correct_initial_agreement,
             one_hop_agreement=correct_one_hop_agreement,
+            movable_positions=movable_positions,
         )
-        if len(wrong_answers) >= num_distractors:
-            final_depths = dependency_lengths(
-                num_variables=instance.num_variables,
-                operations=instance.operations,
-            )
-            queried_depths = tuple(
-                final_depths[variable] for variable in instance.query
-            )
-            chosen_answers = _choose_depth_weighted_answers(
+        attempts = 0
+        while len(wrong_answers) < target_count:
+            attempts += 1
+            if attempts > 100_000:
+                raise ValueError("could not generate enough TMP-fixed periodic permutations")
+            shuffled = list(movable_answer)
+            rng.shuffle(shuffled)
+            candidate = list(correct_answer)
+            for position, value in zip(movable_positions, shuffled, strict=True):
+                candidate[position] = value
+            candidate_tuple = tuple(candidate)
+            if candidate_tuple != correct_answer:
+                wrong_answers.add(candidate_tuple)
+        final_depths = dependency_lengths(
+            num_variables=instance.num_registers,
+            operations=instance.operations,
+        )
+        queried_depths = tuple(final_depths[variable] for variable in instance.query)
+        wrong_answers = set(
+            _choose_depth_weighted_answers(
                 wrong_answers,
                 correct_answer=correct_answer,
                 queried_depths=queried_depths,
-                count=num_distractors,
+                count=target_count,
                 rng=rng,
             )
-            wrong_answers = set(chosen_answers)
-        else:
-            # Legacy periodic traces can have too little answer entropy to
-            # balance all cues. Preserve their established generic behavior;
-            # layered evaluation data is constructed to take the branch above.
-            cue_matched_periodic = False
-            wrong_answers.clear()
+        )
     attempts = 0
-    while len(wrong_answers) < num_distractors:
+    while len(wrong_answers) < target_count:
         attempts += 1
         if attempts > 100_000:
             raise ValueError("could not generate enough leakage-matched periodic distractors")
         replacement_values = rng.sample(range(instance.num_values), len(distinct_values))
         replacements = dict(zip(distinct_values, replacement_values, strict=True))
         candidate = tuple(replacements[value] for value in correct_answer)
+        if fixed_positions:
+            candidate_values = list(candidate)
+            for position in fixed_positions:
+                candidate_values[position] = correct_answer[position]
+            candidate = tuple(candidate_values)
         if candidate == correct_answer:
             continue
         wrong_answers.add(candidate)
@@ -134,13 +157,13 @@ def _periodic_cue_matched_answers(
     one_hop_values: tuple[int, ...],
     initial_agreement: int | None,
     one_hop_agreement: int | None,
+    movable_positions: tuple[int, ...],
 ) -> set[tuple[int, ...]]:
     """Find local rearrangements that preserve every audited shallow score."""
 
     candidates: set[tuple[int, ...]] = set()
-    indices = range(len(correct_answer))
     for size in (2, 3):
-        for selected in combinations(indices, size):
+        for selected in combinations(movable_positions, size):
             values = tuple(correct_answer[index] for index in selected)
             for rearrangement in permutations(values):
                 candidate_list = list(correct_answer)
@@ -211,7 +234,7 @@ def _depth_weight(
 def _initial_values(instance: StateTrackingInstance) -> tuple[int, ...]:
     """Return the first literal assigned to each variable in a periodic trace."""
 
-    values: list[int | None] = [None] * instance.num_variables
+    values: list[int | None] = [None] * instance.num_registers
     for operation in instance.operations:
         if values[operation.target] is None:
             if not isinstance(operation, AssignConstant):
@@ -239,13 +262,12 @@ def _last_copy_source_initial_values(
 ) -> tuple[int, ...]:
     """Initial value lookup obtained by inspecting only the final copy into each target."""
 
-    last_sources: list[int | None] = [None] * instance.num_variables
+    last_sources: list[int | None] = [None] * instance.num_registers
     for operation in instance.operations:
         if isinstance(operation, AssignVariable):
             last_sources[operation.target] = operation.source
-    return tuple(
-        initial_values[last_sources[variable]]
-        if last_sources[variable] is not None
-        else initial_values[variable]
-        for variable in instance.query
-    )
+    values: list[int] = []
+    for variable in instance.query:
+        source = last_sources[variable]
+        values.append(initial_values[source] if source is not None else initial_values[variable])
+    return tuple(values)

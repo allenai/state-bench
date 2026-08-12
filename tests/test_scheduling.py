@@ -108,7 +108,7 @@ def test_long_context_experiment_config_loads() -> None:
     assert long.extra_assignments.jitter_fraction == 0.0
     assert long.extra_assignments.min_samples_per_bucket == 20
     buckets = log_spaced_buckets(long.extra_assignments)
-    assert len(buckets) == 13
+    assert len(buckets) == 12
     bucket_counts = allocate_bucket_counts(long.extra_assignments, total_samples=340)
     assert sum(bucket_counts.values()) == 340
     assert min(bucket_counts.values()) >= 20
@@ -149,14 +149,14 @@ def test_train_profile_experiment_preserves_disabled_train_settings() -> None:
     assert profile.splits["train"].samples_per_condition == 15_400_000
     assert profile.splits["train"].formatters == ["integer-code"]
     assert profile.splits["train"].disjoint_from == []
-    assert profile.generation.periodic_sampling_method == "layered"
+    assert profile.generation.periodic_sampling_method == "swap"
     assert len(profile.generation.conditions) == 1
     training = profile.generation.conditions[0]
     assert training.splits == ["train"]
     assert training.formatters == ["integer-code"]
-    assert training.num_variables == [6, 8, 16]
+    assert training.num_variables == [2, 4, 8, 16]
     assert isinstance(training.extra_assignments, LogSpacedAssignmentSchedule)
-    assert training.extra_assignments.min == 16
+    assert training.extra_assignments.min == 32
     assert training.extra_assignments.max == 256
 
 

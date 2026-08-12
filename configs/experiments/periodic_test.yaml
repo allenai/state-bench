@@ -7,7 +7,7 @@ dataset:
 
 splits:
   test:
-    # 352 source traces per state width: 704 periodic sources total. This keeps
+    # 352 source traces per state width: 1,408 periodic sources total. This keeps
     # 32 examples in each of the eleven depth buckets through 64,000 updates.
     samples_per_condition: 352
 
@@ -17,16 +17,13 @@ generation:
   allow_self_reference: false
   distinct_initial_values: false
   periodic_constant_probability: 0.0
-  # Alternating bank-to-bank permutations preserve multiple value lineages and
-  # give every final variable a long eager-copy dependency path.
-  periodic_sampling_method: layered
+  # Real-variable values are permuted through a formatter-specific TMP register.
+  periodic_sampling_method: swap
   conditions:
     - complexity: periodic
       splits: [test]
       formatters: [integer-code]
-      # Two or four variables cannot simultaneously provide two live value
-      # lanes and an anchor-free all-variable query without spare registers.
-      num_variables: [8, 16]
+      num_variables: [2, 4, 8, 16]
       num_values: 10
       extra_assignments:
         distribution: log-spaced

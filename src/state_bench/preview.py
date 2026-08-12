@@ -41,7 +41,9 @@ class SamplePreview:
             "seed": self.seed,
             "canonical": self.instance.to_record(),
             "rendered": self.rendered.to_record(),
-            "num_extra_assignments": len(self.instance.operations) - self.instance.num_variables,
+            "num_extra_assignments": (
+                len(self.instance.operations) - self.instance.num_initial_assignments
+            ),
             "target_extra_assignments": self.target_extra_assignments,
         }
 
@@ -170,7 +172,7 @@ def format_preview(preview: SamplePreview) -> str:
         f"Complexity: {preview.instance.complexity.value}\n"
         f"Variables: {preview.instance.num_variables}\n"
         f"Assignments: {len(preview.instance.operations)}\n"
-        f"Extra assignments: {len(preview.instance.operations) - preview.instance.num_variables}\n"
+        f"Extra assignments: {len(preview.instance.operations) - preview.instance.num_initial_assignments}\n"
         f"Target extra-assignment bucket: {preview.target_extra_assignments}\n\n"
         f"Filler proportion: {preview.rendered.filler_proportion}\n"
         f"Actual filler proportion: {preview.rendered.actual_filler_proportion}\n"

@@ -93,7 +93,7 @@ generation:
   periodic_constant_probability: 0.1
   conditions:
     - complexity: periodic
-      num_variables: [2, 4, 6]
+      num_variables: [2, 4, 8, 16]
       num_values: 10
       extra_assignments: {min: 1, max: 20}
 
@@ -172,15 +172,15 @@ generation:
       num_values: 10
       extra_assignments:
         distribution: log-spaced
-        min: 1
-        max: 4096
+        min: 3
+        max: 3072
         growth_factor: 2.0
         sample_decay: 0.65
         jitter_fraction: 0.10
         min_samples_per_bucket: 8
 ```
 
-This creates target buckets `1, 2, 4, ..., 4096`. The
+This creates target buckets `3, 6, 12, ..., 3072`. The
 `samples_per_condition` value remains the total periodic-source budget for each
 source-condition/variable-count pair; it is not generated separately at every
 depth. Each source sample produces one row in every complexity class.
@@ -189,28 +189,29 @@ coverage of the longest contexts. `jitter_fraction` samples nearby assignment
 counts rather than putting every row at the exact bucket center. Set
 `sample_decay: 1.0` for uniform sampling across the log-spaced target buckets.
 
-The provided long-context experiment separates a short-to-medium padded source condition
-from an unpadded assignment-length sweep. The latter uses 340 source samples,
-uniform weights across 17 assignment buckets up to 64,000 assignments, and
-exactly 20 sources at every target assignment length. Both conditions emit all
-three complexity classes and every configured formatting. The assignment and
-padding caps keep the most token-dense RULER prompts below roughly one million
-tokens; padding conditions cover 0%, 25%, 50%, 75%, and 90% of final prompt
-lines. An additional integer-code test condition applies 25% padding at every
-assignment bucket, stratified across easy, medium, and hard padding. It is
-appended after the original conditions, so existing test rows retain their
-identities and contents. The training split uses a uniform, log-spaced sweep
-from 1 through 256 extra assignments (the same ×2 spacing as test), with its
-simple `easy` padding style at 25% alongside the unpadded baseline. It renders
-only `integer-code` and is generated disjoint from the unchanged test
-semantics. Hub Parquet shards are capped at 50 long rows apiece.
+The provided test-only long-context experiment separates a padded 32-assignment
+source condition from an unpadded assignment-length sweep. The latter uses 340
+source samples across 12 assignment buckets up to 64,000 assignments. Both
+conditions emit all three complexity classes and every configured formatting.
+The assignment and padding caps keep the most token-dense RULER prompts below
+roughly one million tokens; padding conditions cover 0%, 25%, 50%, 75%, and 90%
+of final prompt lines. An additional integer-code condition applies 25% padding
+at every assignment bucket, stratified across easy, medium, and hard padding.
+Hub Parquet shards are capped at 50 long rows apiece.
+
+Periodic source traces use one pool of ordinary variables plus a scratch
+register. Configured `num_variables` counts only the ordinary variables; each
+formatter supplies its own `temporary_variable` name. A swap is rendered as
+`TMP <- a; a <- b; b <- TMP`. The scratch register is included in the query but
+is held fixed to its correct value in every alternative completion. Dependency
+summary fields cover ordinary variables only.
 
 Rows include `source_example_id` and `source_instance_id` so every derived
 triplet can be joined directly. They also include `num_extra_assignments` and
 `target_extra_assignments` metadata.
 They also include final-state dependency provenance metadata:
 
-- `final_dependency_lengths` gives the copy-hop count for every variable in
+- `final_dependency_lengths` gives the copy-hop count for every ordinary variable in
   variable-index order. A direct constant assignment has length zero, and each
   eager variable copy adds one to the source's length at that moment.
 - `max_dependency_length`, `mean_dependency_length`, and
