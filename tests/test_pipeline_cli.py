@@ -109,8 +109,21 @@ def _small_experiment(tmp_path: Path) -> Path:
     source = yaml.safe_load((ROOT / "configs/experiments/default.yaml").read_text(encoding="utf-8"))
     source["dataset"]["output_dir"] = str(tmp_path / "output")
     source["splits"] = {"train": {"samples_per_condition": 2}, "test": {"samples_per_condition": 1}}
-    source["output"]["shard_size"] = 1
-    source["huggingface"]["staging_workers"] = 2
+    # default.yaml is the full long-context experiment; reset the output and Hub
+    # blocks to a plain, non-minimal base so each test opts into the behavior it
+    # exercises.
+    source["output"] = {
+        "include_canonical_trace": True,
+        "include_final_state": True,
+        "shard_size": 1,
+        "multiple_choice": {"num_distractors": 4, "shuffle_choices": True},
+    }
+    source["huggingface"] = {
+        "include_canonical_config": True,
+        "config_naming": "{formatter}--{complexity}",
+        "staging_workers": 2,
+        "repository": {"repo_id": None, "private": True},
+    }
     source["generation"]["conditions"] = [
         {
             "complexity": "periodic",

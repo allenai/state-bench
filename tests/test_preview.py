@@ -69,7 +69,7 @@ def test_unknown_config_reports_available_names() -> None:
 
 
 def test_preview_can_select_an_exact_long_assignment_depth() -> None:
-    loaded = load_experiment(ROOT / "configs/experiments/long-context.yaml")
+    loaded = load_experiment(ROOT / "configs/experiments/default.yaml")
     preview = generate_preview(
         loaded,
         config_name="integer-code--periodic",
@@ -82,7 +82,7 @@ def test_preview_can_select_an_exact_long_assignment_depth() -> None:
 
 
 def test_long_context_preview_exposes_padded_r_trivial_in_every_formatter() -> None:
-    loaded = load_experiment(ROOT / "configs/experiments/long-context.yaml")
+    loaded = load_experiment(ROOT / "configs/experiments/default.yaml")
     names = available_config_names(loaded)
     for formatter in (
         "integer-code",

@@ -189,15 +189,18 @@ coverage of the longest contexts. `jitter_fraction` samples nearby assignment
 counts rather than putting every row at the exact bucket center. Set
 `sample_decay: 1.0` for uniform sampling across the log-spaced target buckets.
 
-The provided test-only long-context experiment separates a padded 32-assignment
-source condition from an unpadded assignment-length sweep. The latter uses 340
-source samples across 12 assignment buckets up to 64,000 assignments. Both
-conditions emit all three complexity classes and every configured formatting.
-The assignment and padding caps keep the most token-dense RULER prompts below
+The default experiment's test split separates a padded 32-assignment source
+condition from an unpadded assignment-length sweep. The latter uses 340 source
+samples across 12 assignment buckets up to 64,000 assignments. Both conditions
+emit all three complexity classes and every configured formatting. The
+assignment and padding caps keep the most token-dense RULER prompts below
 roughly one million tokens; padding conditions cover 0%, 25%, 50%, 75%, and 90%
 of final prompt lines. An additional integer-code condition applies 25% padding
 at every assignment bucket, stratified across easy, medium, and hard padding.
-Hub Parquet shards are capped at 50 long rows apiece.
+Hub Parquet shards are capped at 50 long rows apiece. The same experiment also
+carries a large, integer-code-only `train` split (a log-spaced 32–256 sweep with
+light padding) kept sample-wise disjoint from `test`; it is emitted as minimal
+prompt/completion rows without a canonical copy.
 
 Periodic source traces use one pool of ordinary variables plus a scratch
 register. Configured `num_variables` counts only the ordinary variables; each
@@ -218,19 +221,20 @@ They also include final-state dependency provenance metadata:
   `modal_dependency_length` summarize those per-variable lengths. If several
   lengths tie for the mode, the smallest is recorded.
 
-The provided long-context experiment applies surface-only filler to short
-periodic sources, then uses the same padding schedule for the two derivations.
-It retains a separate assignment-depth sweep for long semantic traces:
+The default experiment applies surface-only filler to short periodic sources,
+then uses the same padding schedule for the two derivations. It retains a
+separate assignment-depth sweep for long semantic traces:
 
 ```bash
-uv run state-bench config check configs/experiments/long-context.yaml
-uv run state-bench build configs/experiments/long-context.yaml
+uv run state-bench config check configs/experiments/default.yaml
+uv run state-bench build configs/experiments/default.yaml
 ```
 
-For repeatable performance work, the train-only profiling experiment preserves
-the production train budget and settings without constructing the test split.
-The helper below runs that real build path for a bounded interval, prints the
-CPU hot spots, removes its partial output, and can retain the raw profile:
+For repeatable performance work, the profiler builds only the default
+experiment's `train` split (seeding an empty test-ID set so disjointness is
+satisfied without first constructing test), reproducing the production train
+build path. The helper below runs it for a bounded interval, prints the CPU hot
+spots, removes its partial output, and can retain the raw profile:
 
 ```bash
 uv run python scripts/profile_generation.py \
@@ -249,7 +253,7 @@ because exact tokenization requires the tokenizer as well as Parquet support:
 
 ```bash
 uv run --extra hub --extra analysis state-bench hub stage \
-  configs/experiments/long-context.yaml
+  configs/experiments/default.yaml
 ```
 
 With this config, the source `data/state-tracking-long-context-v1` directory is
@@ -303,7 +307,7 @@ Rendered rows record `filler_proportion`, `actual_filler_proportion`,
 `filler_distraction`, and `num_filler_lines`. Preview an exact setting with:
 
 ```bash
-uv run state-bench sample configs/experiments/long-context.yaml \
+uv run state-bench sample configs/experiments/default.yaml \
   integer-code--r-trivial --num-variables 1 \
   --filler-proportion 0.99 --filler-distraction hard
 ```
