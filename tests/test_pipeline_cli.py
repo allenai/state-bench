@@ -211,8 +211,8 @@ def test_build_defaults_to_cpus_minus_one(monkeypatch: pytest.MonkeyPatch, tmp_p
             del chunksize, buffersize
             return map(function, items)  # ty: ignore[invalid-argument-type]
 
-        def shutdown(self) -> None:
-            pass
+        def shutdown(self, *, cancel_futures: bool = False) -> None:
+            del cancel_futures
 
     monkeypatch.setattr("state_bench.io.ProcessPoolExecutor", RecordingExecutor)
     build_dataset(load_experiment(experiment))

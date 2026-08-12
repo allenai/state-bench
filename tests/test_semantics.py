@@ -234,7 +234,6 @@ def test_swap_periodic_generation_uses_one_extra_tmp_register(
         min_extra_assignments=96,
         max_extra_assignments=96,
         periodic_constant_probability=0.0,
-        periodic_sampling_method="swap",
         rng=random.Random(37),
     )
     assert periodic.num_variables == num_variables
@@ -266,7 +265,6 @@ def test_swap_periodic_generation_can_mix_exactly_twenty_percent_constants() -> 
         min_extra_assignments=80,
         max_extra_assignments=80,
         periodic_constant_probability=0.2,
-        periodic_sampling_method="swap",
         rng=random.Random(41),
     )
 

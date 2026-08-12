@@ -26,12 +26,10 @@ splits:
 generation:
   query_mode: all
   require_strict_witness: true
-  allow_self_reference: false
   distinct_initial_values: false
   # Periodic traces mostly extend deep copy provenance chains; occasional
   # constants retain multiple value lineages and reset selected chains.
   periodic_constant_probability: 0.1
-  periodic_sampling_method: swap
   conditions:
     # Padding is scheduled on short sources, then shared by all three derived
     # complexity classes and every selected formatter.
@@ -111,7 +109,6 @@ formatters:
   - config: ../formats/ruler.yaml
 
 output:
-  local_format: jsonl
   include_canonical_trace: true
   include_final_state: true
   # The disabled training corpus is consumed as prompt/completion pairs. Avoid
@@ -138,7 +135,6 @@ output:
 huggingface:
   include_canonical_config: true
   config_naming: "{formatter}--{complexity}"
-  data_format: parquet
   staging_workers: 2
   # Rendered configs are exposed as independently loadable splits. Bounds are
   # half-open [min, max) where each named split's upper bound is exactly its

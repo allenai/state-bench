@@ -1,6 +1,5 @@
 schema_version: 1
 name: ruler
-renderer: template
 filler_corpus_path: ../corpora/ruler-essay.txt
 
 vocabulary:

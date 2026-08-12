@@ -1,6 +1,5 @@
 schema_version: 1
 name: people-in-rooms
-renderer: template
 
 vocabulary:
   variables: [Alice, Bob, Carol, David, Elena, Frank, Grace, Henry, Iris, James, Karen, Leo, Maya, Noah, Olivia, Peter]

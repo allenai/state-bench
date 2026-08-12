@@ -64,7 +64,6 @@ def test_periodic_distractors_match_initial_value_and_position_cues() -> None:
         num_values=10,
         min_extra_assignments=64,
         max_extra_assignments=64,
-        periodic_sampling_method="swap",
         rng=random.Random(19),
     )
     initial = [None] * instance.num_registers

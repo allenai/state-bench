@@ -29,7 +29,7 @@ from state_bench.config import (
     split_uses_formatter,
 )
 from state_bench.distractors import generate_incorrect_states
-from state_bench.generation import PeriodicSamplingMethod, derive_variants, generate_periodic_source
+from state_bench.generation import derive_variants, generate_periodic_source
 from state_bench.model import Complexity, QueryMode, StateTrackingInstance
 from state_bench.rendering import RenderedExample, render_instance
 from state_bench.scheduling import (
@@ -126,9 +126,7 @@ class _GenerationTask:
     query_mode: QueryMode
     distinct_initial_values: bool
     require_strict_witness: bool
-    allow_self_reference: bool
     periodic_constant_probability: float
-    periodic_sampling_method: PeriodicSamplingMethod
     root_seed: int
     excluded_semantics: frozenset[str]
     plan_item: AssignmentPlanItem
@@ -184,9 +182,7 @@ def _generate_instances(
             query_mode=task.query_mode,
             distinct_initial_values=task.distinct_initial_values,
             require_strict_witness=task.require_strict_witness,
-            allow_self_reference=task.allow_self_reference,
             periodic_constant_probability=task.periodic_constant_probability,
-            periodic_sampling_method=task.periodic_sampling_method,
             rng=random.Random(retry_seed),
         )
         instances = derive_variants(source)
@@ -490,9 +486,7 @@ def build_dataset(
                             query_mode=spec.generation.query_mode,
                             distinct_initial_values=spec.generation.distinct_initial_values,
                             require_strict_witness=spec.generation.require_strict_witness,
-                            allow_self_reference=spec.generation.allow_self_reference,
                             periodic_constant_probability=spec.generation.periodic_constant_probability,
-                            periodic_sampling_method=spec.generation.periodic_sampling_method,
                             root_seed=spec.dataset.seed,
                             excluded_semantics=frozen_excluded_semantics,
                             plan_item=plan_item,
@@ -701,10 +695,7 @@ def build_dataset(
     finally:
         progress.close()
         if executor is not None:
-            if "cancel_futures" in inspect.signature(executor.shutdown).parameters:
-                executor.shutdown(cancel_futures=True)
-            else:
-                executor.shutdown()
+            executor.shutdown(cancel_futures=True)
         for handle in (*canonical_handles.values(), *rendered_handles.values()):
             handle.close()
         if chunk_root is not None:

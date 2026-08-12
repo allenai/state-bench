@@ -150,7 +150,6 @@ def test_train_profile_experiment_preserves_disabled_train_settings() -> None:
     assert profile.splits["train"].samples_per_condition == 15_400_000
     assert profile.splits["train"].formatters == ["integer-code"]
     assert profile.splits["train"].disjoint_from == []
-    assert profile.generation.periodic_sampling_method == "swap"
     assert len(profile.generation.conditions) == 1
     training = profile.generation.conditions[0]
     assert training.splits == ["train"]
