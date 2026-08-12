@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
@@ -120,6 +121,31 @@ def _value_palette(values: Sequence[int]) -> dict[int, tuple[float, float, float
     name = "colorblind" if count <= 10 else "husl"
     palette = sns.color_palette(name, n_colors=max(count, 1))
     return dict(zip(values, palette, strict=False))
+
+
+def _time_ticks(max_step: int, target: int = 10) -> list[int]:
+    """Round-stride tick positions from 0, always including the final step.
+
+    The stride is the smallest 1/2/5 x 10^k value that keeps the count near
+    ``target``, so labels land on round numbers instead of a floored even split.
+    """
+
+    if max_step <= target:
+        step = 1
+    else:
+        raw = max_step / target
+        magnitude = 10.0 ** math.floor(math.log10(raw))
+        step = next(
+            (int(factor * magnitude) for factor in (1, 2, 5, 10) if factor * magnitude >= raw),
+            int(10 * magnitude),
+        )
+    ticks = list(range(0, max_step + 1, max(step, 1)))
+    if ticks[-1] != max_step:
+        ticks.append(max_step)
+    # Drop a penultimate tick that would crowd the always-present final one.
+    if len(ticks) >= 2 and ticks[-1] - ticks[-2] < step * 0.6:
+        del ticks[-2]
+    return ticks
 
 
 def _smooth_crossing(x0: float, x1: float, y0: float, y1: float, samples: int = 72) -> tuple[Any, Any]:
@@ -239,9 +265,7 @@ def render_braid(record: dict[str, Any], *, output: Path, title: str | None) -> 
             color=colors[value], fontweight="bold", fontsize=9, zorder=6,
         )
 
-    tick_count = min(12, max_step + 1)
-    ticks = np.unique(np.linspace(0, max_step, tick_count, dtype=int))
-    axis.set_xticks(ticks)
+    axis.set_xticks(_time_ticks(max_step))
     axis.set_yticks(range(len(labels)))
     axis.set_yticklabels(labels, fontfamily="monospace")
     for tick_label, row in zip(axis.get_yticklabels(), range(len(labels)), strict=True):
