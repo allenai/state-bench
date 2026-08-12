@@ -392,6 +392,84 @@ def test_split_scoping_and_disjoint_generation_preserve_existing_test_bytes(
     assert "cube-painting--periodic/train" not in manifest["counts"]
 
 
+def _test_and_train_experiment(tmp_path: Path) -> Path:
+    """A two-split experiment: test in every formatter, train in integer-code only."""
+
+    experiment = _small_experiment(tmp_path)
+    source = yaml.safe_load(experiment.read_text(encoding="utf-8"))
+    source["splits"] = {
+        "test": {"samples_per_condition": 2},
+        "train": {
+            "samples_per_condition": 2,
+            "formatters": ["integer-code"],
+            "disjoint_from": ["test"],
+        },
+    }
+    source["generation"]["conditions"][0]["splits"] = ["test"]
+    source["generation"]["conditions"].append(
+        {
+            "complexity": "periodic",
+            "splits": ["train"],
+            "formatters": ["integer-code"],
+            "num_variables": [2],
+            "num_values": 10,
+            "extra_assignments": {"min": 3, "max": 3},
+            "filler": {"proportions": [0.0], "distraction_levels": ["easy"]},
+        }
+    )
+    experiment.write_text(yaml.safe_dump(source, sort_keys=False), encoding="utf-8")
+    return experiment
+
+
+def test_independent_split_builds_share_disjointness_via_persisted_ids(
+    tmp_path: Path,
+) -> None:
+    experiment = _test_and_train_experiment(tmp_path)
+    output = tmp_path / "shared-output"
+
+    # Build the test split alone; its semantic IDs are persisted for later runs.
+    build_dataset(load_experiment(experiment), output_dir=output, only_splits=frozenset({"test"}))
+    assert (output / "semantics" / "test.ids").is_file()
+    assert not (output / "canonical" / "train.jsonl").exists()
+    test_bytes = {
+        str(path.relative_to(output)): path.read_bytes() for path in output.rglob("test.jsonl")
+    }
+
+    # Build the train split independently into the same directory; disjointness
+    # is enforced from the persisted test IDs, not from an in-memory set.
+    build_dataset(load_experiment(experiment), output_dir=output, only_splits=frozenset({"train"}))
+
+    assert {
+        str(path.relative_to(output)): path.read_bytes() for path in output.rglob("test.jsonl")
+    } == test_bytes, "an independent train build must not touch existing test rows"
+
+    test_semantics = {row["instance_id"] for row in read_jsonl(output / "canonical/test.jsonl")}
+    train_semantics = {row["instance_id"] for row in read_jsonl(output / "canonical/train.jsonl")}
+    assert train_semantics
+    assert test_semantics.isdisjoint(train_semantics)
+
+    # The merged manifest keeps the record for both splits.
+    manifest = json.loads((output / "manifest.json").read_text())
+    assert any(key.endswith("/test") for key in manifest["counts"])
+    assert "integer-code--periodic/train" in manifest["counts"]
+
+
+def test_disjoint_build_without_persisted_ids_is_rejected(tmp_path: Path) -> None:
+    experiment = _test_and_train_experiment(tmp_path)
+    with pytest.raises(FileNotFoundError, match="must be generated before"):
+        build_dataset(
+            load_experiment(experiment),
+            output_dir=tmp_path / "train-first",
+            only_splits=frozenset({"train"}),
+        )
+
+
+def test_unknown_requested_split_is_rejected(tmp_path: Path) -> None:
+    experiment = _small_experiment(tmp_path)
+    with pytest.raises(ValueError, match="unknown splits requested"):
+        build_dataset(load_experiment(experiment), only_splits=frozenset({"nonexistent"}))
+
+
 def test_padded_length_sweep_appends_rows_without_changing_existing_test_rows(
     tmp_path: Path,
 ) -> None:

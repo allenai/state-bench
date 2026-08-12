@@ -126,20 +126,21 @@ def test_long_context_experiment_config_loads() -> None:
     assert token_strata.batch_size == 64
     assert token_strata.max_batch_characters == 16_000_000
     assert loaded.spec.output.target_shard_bytes == 128_000_000
+    # Each named stratum caps at exactly its namesake power of two.
     assert [item.max_tokens for item in token_strata.ranges] == [
         2_048,
-        6_144,
-        12_288,
-        24_576,
-        49_152,
-        98_304,
-        196_608,
-        393_216,
-        786_432,
-        1_572_864,
+        4_096,
+        8_192,
+        16_384,
+        32_768,
+        65_536,
+        131_072,
+        262_144,
+        524_288,
+        1_048_576,
         None,
     ]
-    assert next(item for item in token_strata.ranges if item.name == "tokens_128k").min_tokens == 98_304
+    assert next(item for item in token_strata.ranges if item.name == "tokens_128k").min_tokens == 65_536
 
 
 def test_train_profile_experiment_preserves_disabled_train_settings() -> None:

@@ -238,11 +238,11 @@ uv run python scripts/profile_generation.py \
   --profile /tmp/state-bench-generation.prof
 ```
 
-The preset also configures exact tokenizer-length strata for Hub staging around
-successive powers of two. For example, `tokens_128k` is `[96k, 192k)` and
-`tokens_512k` is `[384k, 768k)`, so each named band is concentrated near its
-target context length. Token counts are measured for every rendered prompt
-prefix with the OLMo 3 tokenizer.
+The preset also configures exact tokenizer-length strata for Hub staging. Each
+named band's upper bound is exactly its namesake power of two, so `tokens_128k`
+is `[64k, 128k)` and `tokens_512k` is `[256k, 512k)` — a named band contains
+prompts no longer than its target context length. Token counts are measured for
+every rendered prompt prefix with the OLMo 3 tokenizer.
 Gigatoken accelerates the exact tokenization path while preserving Hugging
 Face tokenizer outputs. Stage this preset with both optional dependency groups
 because exact tokenization requires the tokenizer as well as Parquet support:
@@ -370,6 +370,21 @@ Generate canonical and rendered JSONL:
 ```bash
 uv run state-bench build configs/experiments/default.yaml
 ```
+
+Splits can also be generated independently with `--splits`, into a shared
+output directory. Build the (small, multi-formatter) test split first, then the
+(large, single-formatter) train split in a separate run — disjointness is
+preserved across runs:
+
+```bash
+uv run state-bench build configs/experiments/default.yaml --splits test
+uv run state-bench build configs/experiments/default.yaml --splits train
+```
+
+The test run persists its semantic IDs under `<output>/semantics/`, and the
+train run enforces `disjoint_from: [test]` against them. Building a split before
+the split it must stay disjoint from fails with a clear error. Omit `--splits`
+to build every split in one run (the default).
 
 Preview one generated example without writing a dataset:
 

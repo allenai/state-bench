@@ -268,10 +268,26 @@ def build_dataset(
     *,
     output_dir: Path | None = None,
     workers: int | None = None,
+    only_splits: frozenset[str] | None = None,
 ) -> Path:
-    """Generate canonical and rendered JSONL artifacts from an experiment."""
+    """Generate canonical and rendered JSONL artifacts from an experiment.
+
+    When ``only_splits`` is given, only those splits are generated; any split
+    they must stay disjoint from that is not part of this run is enforced from
+    the semantic IDs a prior build persisted under ``<output>/semantics``.
+    """
 
     spec = loaded.spec
+    if only_splits is not None:
+        unknown_splits = only_splits - spec.splits.keys()
+        if unknown_splits:
+            raise ValueError(f"unknown splits requested: {sorted(unknown_splits)}")
+        if not only_splits:
+            raise ValueError("only_splits must not be empty")
+
+    def selected(split: str) -> bool:
+        return only_splits is None or split in only_splits
+
     auto_workers = workers is None
     workers = max(1, (_available_cpu_count() or 1) - 1) if auto_workers else workers
     if workers < 1:
@@ -302,6 +318,7 @@ def build_dataset(
             if condition_uses_split(condition, split_name)
         )
         for split_name, split in spec.splits.items()
+        if selected(split_name)
     )
     progress = tqdm(
         total=total_examples,
@@ -325,6 +342,8 @@ def build_dataset(
     chunk_root: Path | None = None
     try:
         for split in spec.splits:
+            if not selected(split):
+                continue
             if split in spec.output.omit_canonical_splits:
                 # A rebuild may reuse an output directory created before this
                 # split was made minimal; do not leave stale canonical rows.
@@ -347,6 +366,8 @@ def build_dataset(
             }
             for config_name in sorted(config_names):
                 for split, split_spec in spec.splits.items():
+                    if not selected(split):
+                        continue
                     if not split_uses_formatter(split_spec, formatter.name):
                         continue
                     if not any(
@@ -361,7 +382,16 @@ def build_dataset(
                     generated_files.append(path)
 
         for split_name, split_spec in spec.splits.items():
-            excluded_semantics = set().union(*(split_semantics[name] for name in split_spec.disjoint_from))
+            if not selected(split_name):
+                continue
+            excluded_semantics: set[str] = set()
+            for disjoint_name in split_spec.disjoint_from:
+                if selected(disjoint_name):
+                    # Built earlier in this run; the validator guarantees a
+                    # disjoint_from split precedes the split that references it.
+                    excluded_semantics |= split_semantics[disjoint_name]
+                else:
+                    excluded_semantics |= _load_persisted_semantics(root, disjoint_name)
             for condition_index, condition in enumerate(spec.generation.conditions):
                 if not condition_uses_split(condition, split_name):
                     continue
@@ -680,6 +710,13 @@ def build_dataset(
         if chunk_root is not None:
             shutil.rmtree(chunk_root, ignore_errors=True)
 
+    # Persist the semantic IDs of every generated split that a later split must
+    # stay disjoint from, so a subsequent independent build (for example a large
+    # train split) can enforce disjointness from this run's test split.
+    for split_name in spec.splits:
+        if selected(split_name) and split_name in referenced_splits:
+            _persist_split_semantics(root, split_name, split_semantics[split_name])
+
     file_hashes: dict[str, str] = {}
     if spec.output.hash_files:
         hash_progress = tqdm(
@@ -716,8 +753,34 @@ def build_dataset(
         "huggingface": spec.huggingface.model_dump(mode="json"),
     }
     manifest_path = root / "manifest.json"
+    if only_splits is not None and manifest_path.exists():
+        # A partial build only knows about the splits it generated; fold its
+        # counts and file hashes into the manifest a prior run left behind so
+        # the record for untouched splits survives.
+        existing_manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        manifest = _merge_manifest(existing_manifest, manifest)
     manifest_path.write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     return root
+
+
+def _merge_manifest(existing: dict[str, Any], updated: dict[str, Any]) -> dict[str, Any]:
+    """Overlay a partial build's manifest onto a prior full or partial manifest."""
+
+    merged = {**existing, **updated}
+    merged["counts"] = dict(sorted({**existing.get("counts", {}), **updated["counts"]}.items()))
+    merged["files"] = dict(sorted({**existing.get("files", {}), **(updated["files"] or {})}.items()))
+    existing_unique = existing.get("unique_semantic_counts") or {}
+    updated_unique = updated["unique_semantic_counts"]
+    merged["unique_semantic_counts"] = (
+        dict(sorted({**existing_unique, **updated_unique}.items()))
+        if updated_unique is not None
+        else (existing_unique or None)
+    )
+    # A partial run cannot recompute overlaps against splits it did not build;
+    # keep the richer record whenever this run produced none.
+    if not updated["cross_split_semantic_overlap"]:
+        merged["cross_split_semantic_overlap"] = existing.get("cross_split_semantic_overlap", {})
+    return merged
 
 
 def read_jsonl(path: Path) -> list[dict[str, Any]]:
@@ -782,6 +845,35 @@ def _assignment_range_item(spec: AssignmentRange) -> AssignmentPlanItem:
 
 def hub_config_name(pattern: str, *, formatter: str, complexity: str) -> str:
     return pattern.format(formatter=formatter, complexity=complexity)
+
+
+def _semantics_dir(root: Path) -> Path:
+    return root / "semantics"
+
+
+def _persist_split_semantics(root: Path, split_name: str, instance_ids: set[str]) -> None:
+    """Write a split's semantic IDs so later independent builds can exclude them."""
+
+    directory = _semantics_dir(root)
+    directory.mkdir(parents=True, exist_ok=True)
+    path = directory / f"{split_name}.ids"
+    with path.open("w", encoding="utf-8") as handle:
+        for instance_id in sorted(instance_ids):
+            handle.write(f"{instance_id}\n")
+
+
+def _load_persisted_semantics(root: Path, split_name: str) -> set[str]:
+    """Load a prior build's persisted semantic IDs for a disjoint_from split."""
+
+    path = _semantics_dir(root) / f"{split_name}.ids"
+    if not path.exists():
+        raise FileNotFoundError(
+            f"split {split_name!r} must be generated before a split that is disjoint from it, "
+            f"but no persisted semantics were found at {path}. Build {split_name!r} into this "
+            f"output directory first (for example `build <config> --splits {split_name}`)."
+        )
+    with path.open(encoding="utf-8") as handle:
+        return {line.strip() for line in handle if line.strip()}
 
 
 def derive_seed(root_seed: int, *parts: str) -> int:
