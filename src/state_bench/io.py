@@ -208,6 +208,9 @@ def _write_minimal_chunk(task: _MinimalChunkTask) -> _MinimalChunkResult:
             generated = _generate_instances(sample_task)
             for complexity, instance in zip(Complexity, generated.instances, strict=True):
                 example_id = _derived_example_id(generated.source_example_id, complexity)
+                # Sensitivity depends only on the instance; compute it once and
+                # reuse it across every formatter rendered from this instance.
+                sensitivity = sensitivity_summary(instance)
                 for formatter in task.formatters:
                     config_name = hub_config_name(
                         task.config_naming,
@@ -235,6 +238,7 @@ def _write_minimal_chunk(task: _MinimalChunkTask) -> _MinimalChunkResult:
                         filler_proportion=generated.filler_item.proportion,
                         filler_distraction=generated.filler_item.distraction,
                         include_diagnostics=False,
+                        sensitivity=sensitivity,
                     )
                     write_json_line(
                         handles[config_name],
@@ -563,15 +567,26 @@ def build_dataset(
                                 split_name in canonical_handles
                                 or split_name not in spec.output.minimal_splits
                             )
+                            minimal_output = split_name in spec.output.minimal_splits
+                            # Both summaries depend only on the instance; compute
+                            # once and share them with the canonical record and
+                            # every formatter render below.
+                            sensitivity = sensitivity_summary(instance)
+                            dependencies = (
+                                dependency_summary(instance)
+                                if needs_canonical_record or not minimal_output
+                                else None
+                            )
                             canonical_record: dict[str, Any] | None = None
                             if needs_canonical_record:
+                                assert dependencies is not None
                                 canonical_record = {
                                     "example_id": example_id,
                                     "source_example_id": source_example_id,
                                     "source_instance_id": source.instance_id,
                                     **instance.to_record(),
-                                    **dependency_summary(instance).to_record(),
-                                    **sensitivity_summary(instance).to_record(),
+                                    **dependencies.to_record(),
+                                    **sensitivity.to_record(),
                                     "num_extra_assignments": (
                                         len(instance.operations) - instance.num_initial_assignments
                                     ),
@@ -600,7 +615,6 @@ def build_dataset(
                                 if include_trace
                                 else None
                             )
-                            minimal_output = split_name in spec.output.minimal_splits
                             incorrect_states = (
                                 ()
                                 if minimal_output
@@ -639,6 +653,8 @@ def build_dataset(
                                     filler_proportion=filler_item.proportion,
                                     filler_distraction=filler_item.distraction,
                                     include_diagnostics=not minimal_output,
+                                    dependencies=dependencies,
+                                    sensitivity=sensitivity,
                                 )
                                 rendered_record: dict[str, Any]
                                 if minimal_output:

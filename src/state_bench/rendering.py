@@ -10,7 +10,12 @@ from typing import Any
 
 from state_bench.config import FillerDistraction, FormatterSpec, TemplateValue
 from state_bench.model import AssignConstant, AssignVariable, StateTrackingInstance
-from state_bench.semantics import dependency_summary, sensitivity_summary
+from state_bench.semantics import (
+    DependencySummary,
+    SensitivitySummary,
+    dependency_summary,
+    sensitivity_summary,
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -87,8 +92,16 @@ def render_instance(
     filler_proportion: float = 0.0,
     filler_distraction: FillerDistraction | None = None,
     include_diagnostics: bool = True,
+    dependencies: DependencySummary | None = None,
+    sensitivity: SensitivitySummary | None = None,
 ) -> RenderedExample:
-    """Render an instance without recomputing or changing its semantics."""
+    """Render an instance without recomputing or changing its semantics.
+
+    ``dependencies`` and ``sensitivity`` depend only on ``instance``; callers
+    that render one instance in several formatters (or also need them for a
+    canonical record) can compute them once and pass them in to avoid repeating
+    the traversal per render.
+    """
 
     _validate_capacity(instance, formatter)
     surface_variables, surface_values = _surface_vocabulary(instance, formatter, rng)
@@ -205,8 +218,12 @@ def render_instance(
         incorrect_completions = tuple(value + "\n" for value in incorrect_completions)
         choices = [value + "\n" for value in choices]
 
-    dependencies = dependency_summary(instance) if include_diagnostics else None
-    sensitivity = sensitivity_summary(instance)
+    if include_diagnostics and dependencies is None:
+        dependencies = dependency_summary(instance)
+    elif not include_diagnostics:
+        dependencies = None
+    if sensitivity is None:
+        sensitivity = sensitivity_summary(instance)
     return RenderedExample(
         instance_id=instance.instance_id,
         formatter=formatter.name,
