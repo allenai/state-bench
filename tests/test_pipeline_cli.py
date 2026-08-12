@@ -701,6 +701,22 @@ def test_stage_and_validate_hub_repository(tmp_path: Path) -> None:
     assert any(operation["source"] is not None for operation in periodic_row["operations"])
 
 
+def test_stage_overwrites_a_populated_repo_directory(tmp_path: Path) -> None:
+    pytest.importorskip("pyarrow.parquet")
+    loaded = load_experiment(_small_experiment(tmp_path))
+    output = build_dataset(loaded)
+    repo_dir = tmp_path / "hub"
+
+    # A prior staging (plus an unrelated stale file) must not block a re-stage.
+    stage_hub_repository(loaded, source_dir=output, repo_dir=repo_dir)
+    stale = repo_dir / "data" / "leftover.parquet"
+    stale.write_text("stale", encoding="utf-8")
+
+    stage_hub_repository(loaded, source_dir=output, repo_dir=repo_dir)
+    assert not stale.exists(), "re-staging must clear stale artifacts"
+    assert validate_hub_repository(repo_dir)["files"] == 27
+
+
 def test_stage_progress_tracks_rows_written(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,

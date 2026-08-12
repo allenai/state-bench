@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import shutil
 import statistics
 from bisect import bisect_left
 from collections import defaultdict
@@ -29,9 +30,11 @@ def stage_hub_repository(
 ) -> Path:
     """Create a complete local Hub repository without network access."""
 
-    if repo_dir.exists() and any(repo_dir.iterdir()):
-        raise FileExistsError(f"Hub staging directory is not empty: {repo_dir}")
-    repo_dir.mkdir(parents=True, exist_ok=True)
+    # Freely overwrite any prior staging: clear the directory so stale shards or
+    # metadata from an earlier run cannot linger alongside the new artifacts.
+    if repo_dir.exists():
+        shutil.rmtree(repo_dir)
+    repo_dir.mkdir(parents=True)
     data_dir = repo_dir / "data"
     data_dir.mkdir()
 
