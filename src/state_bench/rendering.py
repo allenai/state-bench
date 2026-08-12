@@ -10,7 +10,12 @@ from typing import Any
 
 from state_bench.config import FillerDistraction, FormatterSpec, TemplateValue
 from state_bench.model import AssignConstant, AssignVariable, StateTrackingInstance
-from state_bench.semantics import dependency_summary, sensitivity_summary
+from state_bench.semantics import (
+    DependencySummary,
+    SensitivitySummary,
+    dependency_summary,
+    sensitivity_summary,
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -87,8 +92,16 @@ def render_instance(
     filler_proportion: float = 0.0,
     filler_distraction: FillerDistraction | None = None,
     include_diagnostics: bool = True,
+    dependencies: DependencySummary | None = None,
+    sensitivity: SensitivitySummary | None = None,
 ) -> RenderedExample:
-    """Render an instance without recomputing or changing its semantics."""
+    """Render an instance without recomputing or changing its semantics.
+
+    ``dependencies`` and ``sensitivity`` depend only on ``instance``; callers
+    that render one instance in several formatters (or also need them for a
+    canonical record) can compute them once and pass them in to avoid repeating
+    the traversal per render.
+    """
 
     _validate_capacity(instance, formatter)
     surface_variables, surface_values = _surface_vocabulary(instance, formatter, rng)
@@ -103,6 +116,12 @@ def render_instance(
         ),
     }
 
+    # The set of legal placeholders is fixed across a render, so build each
+    # once here instead of allocating and sorting a fresh set per operation.
+    metadata_keys = frozenset(metadata)
+    constant_allowed = metadata_keys | {"target", "value"}
+    reference_allowed = metadata_keys | {"target", "source"}
+
     instructions: list[str] = []
     for operation in instance.operations:
         if isinstance(operation, AssignConstant):
@@ -110,7 +129,7 @@ def render_instance(
             instructions.append(
                 _substitute(
                     template,
-                    allowed={"target", "value", *metadata},
+                    allowed=constant_allowed,
                     target=surface_variables[operation.target],
                     value=surface_values[operation.value],
                     **metadata,
@@ -121,7 +140,7 @@ def render_instance(
             instructions.append(
                 _substitute(
                     template,
-                    allowed={"target", "source", *metadata},
+                    allowed=reference_allowed,
                     target=surface_variables[operation.target],
                     source=surface_variables[operation.source],
                     **metadata,
@@ -199,8 +218,12 @@ def render_instance(
         incorrect_completions = tuple(value + "\n" for value in incorrect_completions)
         choices = [value + "\n" for value in choices]
 
-    dependencies = dependency_summary(instance) if include_diagnostics else None
-    sensitivity = sensitivity_summary(instance)
+    if include_diagnostics and dependencies is None:
+        dependencies = dependency_summary(instance)
+    elif not include_diagnostics:
+        dependencies = None
+    if sensitivity is None:
+        sensitivity = sensitivity_summary(instance)
     return RenderedExample(
         instance_id=instance.instance_id,
         formatter=formatter.name,
@@ -297,17 +320,17 @@ def _render_program_with_filler(
         filler_line = Template(template_value).substitute(filler_dots="." * filler_width)
         filler_lines = [filler_line] * num_filler_lines
     else:
+        filler_allowed = frozenset(metadata) | {
+            "variable",
+            "value",
+            "filler_index",
+            "filler_dots",
+            "filler_text",
+        }
         filler_lines = [
             _substitute(
                 _choose(template_value, rng),
-                allowed={
-                    "variable",
-                    "value",
-                    "filler_index",
-                    "filler_dots",
-                    "filler_text",
-                    *metadata,
-                },
+                allowed=filler_allowed,
                 variable=rng.choice(surface_variables),
                 value=rng.choice(surface_values),
                 filler_index=str(index + 1),
@@ -388,13 +411,14 @@ def _optional_render(
 ) -> str:
     if value is None:
         return ""
-    return _substitute(_choose(value, rng), allowed=set(metadata), **metadata)
+    return _substitute(_choose(value, rng), allowed=frozenset(metadata), **metadata)
 
 
-def _substitute(template: str, *, allowed: set[str], **values: str) -> str:
+def _substitute(template: str, *, allowed: frozenset[str], **values: str) -> str:
     # FormatterSpec validates every template once while loading configuration.
     # Cache the defensive runtime check for programmatically constructed specs.
-    _validate_runtime_template(template, tuple(sorted(allowed)))
+    # ``allowed`` is a hashable frozenset, so the cache keys on it directly.
+    _validate_runtime_template(template, allowed)
     try:
         return "".join(
             literal + (values[identifier] if identifier is not None else "")
@@ -405,13 +429,13 @@ def _substitute(template: str, *, allowed: set[str], **values: str) -> str:
 
 
 @cache
-def _validate_runtime_template(template: str, allowed: tuple[str, ...]) -> None:
+def _validate_runtime_template(template: str, allowed: frozenset[str]) -> None:
     identifiers = {
         identifier
         for _, identifier in _template_parts(template)
         if identifier is not None
     }
-    unknown = identifiers - set(allowed)
+    unknown = identifiers - allowed
     if unknown:
         raise ValueError(f"unknown template placeholders: {sorted(unknown)}")
 
@@ -477,10 +501,11 @@ def _render_completion(
     surface_variables: tuple[str, ...],
     surface_values: tuple[str, ...],
 ) -> str:
+    completion_allowed = frozenset(metadata) | {"variable", "value"}
     assertions = [
         _substitute(
             assertion_template,
-            allowed={"variable", "value", *metadata},
+            allowed=completion_allowed,
             variable=surface_variables[variable],
             value=surface_values[state[variable]],
             **metadata,

@@ -1,6 +1,5 @@
 schema_version: 1
 name: integer-code
-renderer: template
 
 vocabulary:
   variables: [a, b, c, d, e, f, g, h, i, j, k, l, m, n, o, p]

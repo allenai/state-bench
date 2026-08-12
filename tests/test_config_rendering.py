@@ -224,7 +224,6 @@ def test_unknown_formatter_field_is_rejected() -> None:
             {
                 "schema_version": 1,
                 "name": "bad",
-                "renderer": "template",
                 "vocabulary": {"variables": ["a"], "values": ["1"]},
                 "templates": {
                     "assign_constant": "$target=$value",

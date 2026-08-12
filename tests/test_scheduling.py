@@ -91,13 +91,22 @@ def test_too_small_sample_budget_is_rejected() -> None:
         allocate_bucket_counts(_schedule(), total_samples=10)
 
 
-def test_long_context_experiment_config_loads() -> None:
-    loaded = load_experiment(ROOT / "configs/experiments/long-context.yaml")
+def test_default_experiment_config_loads() -> None:
+    loaded = load_experiment(ROOT / "configs/experiments/default.yaml")
     assert loaded.spec.dataset.name == "state-tracking-long-context-v1"
     assert loaded.spec.splits["test"].samples_per_condition == 340
-    assert set(loaded.spec.splits) == {"test"}
-    assert len(loaded.spec.generation.conditions) == 3
-    padded, long, padded_long = loaded.spec.generation.conditions
+    assert set(loaded.spec.splits) == {"test", "train"}
+    # The large integer-code-only train split is kept disjoint from test, and
+    # is emitted as minimal prompt/completion rows without a canonical copy.
+    train = loaded.spec.splits["train"]
+    assert train.samples_per_condition == 15_400_000
+    assert train.formatters == ["integer-code"]
+    assert train.disjoint_from == ["test"]
+    assert loaded.spec.output.minimal_splits == ["train"]
+    assert loaded.spec.output.omit_canonical_splits == ["train"]
+    assert not loaded.spec.output.track_unique_semantics
+
+    padded, long, training, padded_long = loaded.spec.generation.conditions
     assert padded.splits == ["test"]
     assert padded.formatters is None
     assert padded.filler.proportions == [0.0, 0.25, 0.5, 0.75, 0.9]
@@ -112,6 +121,15 @@ def test_long_context_experiment_config_loads() -> None:
     bucket_counts = allocate_bucket_counts(long.extra_assignments, total_samples=340)
     assert sum(bucket_counts.values()) == 340
     assert min(bucket_counts.values()) >= 20
+    # The train sweep is a log-spaced 32..256 integer-code condition.
+    assert training.splits == ["train"]
+    assert training.formatters == ["integer-code"]
+    assert training.num_variables == [2, 4, 8, 16]
+    assert isinstance(training.extra_assignments, LogSpacedAssignmentSchedule)
+    assert training.extra_assignments.min == 32
+    assert training.extra_assignments.max == 256
+    assert training.filler.proportions == [0.0, 0.25]
+    assert training.filler.distraction_levels == ["easy"]
     assert padded_long.splits == ["test"]
     assert padded_long.formatters == ["integer-code"]
     assert isinstance(padded_long.extra_assignments, LogSpacedAssignmentSchedule)
@@ -126,38 +144,21 @@ def test_long_context_experiment_config_loads() -> None:
     assert token_strata.batch_size == 64
     assert token_strata.max_batch_characters == 16_000_000
     assert loaded.spec.output.target_shard_bytes == 128_000_000
+    # Each named stratum caps at exactly its namesake power of two.
     assert [item.max_tokens for item in token_strata.ranges] == [
         2_048,
-        6_144,
-        12_288,
-        24_576,
-        49_152,
-        98_304,
-        196_608,
-        393_216,
-        786_432,
-        1_572_864,
+        4_096,
+        8_192,
+        16_384,
+        32_768,
+        65_536,
+        131_072,
+        262_144,
+        524_288,
+        1_048_576,
         None,
     ]
-    assert next(item for item in token_strata.ranges if item.name == "tokens_128k").min_tokens == 98_304
-
-
-def test_train_profile_experiment_preserves_disabled_train_settings() -> None:
-    profile = load_experiment(
-        ROOT / "configs/experiments/long-context-train-profile.yaml"
-    ).spec
-    assert profile.splits["train"].samples_per_condition == 15_400_000
-    assert profile.splits["train"].formatters == ["integer-code"]
-    assert profile.splits["train"].disjoint_from == []
-    assert profile.generation.periodic_sampling_method == "swap"
-    assert len(profile.generation.conditions) == 1
-    training = profile.generation.conditions[0]
-    assert training.splits == ["train"]
-    assert training.formatters == ["integer-code"]
-    assert training.num_variables == [2, 4, 8, 16]
-    assert isinstance(training.extra_assignments, LogSpacedAssignmentSchedule)
-    assert training.extra_assignments.min == 32
-    assert training.extra_assignments.max == 256
+    assert next(item for item in token_strata.ranges if item.name == "tokens_128k").min_tokens == 65_536
 
 
 def test_filler_plan_preserves_budget_and_evenly_covers_axis() -> None:

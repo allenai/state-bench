@@ -35,6 +35,15 @@ def build_parser() -> argparse.ArgumentParser:
         type=int,
         help="Process workers for source generation (defaults to available CPUs minus one).",
     )
+    build.add_argument(
+        "--splits",
+        nargs="+",
+        help=(
+            "Generate only these splits (default: all). Disjointness with splits that "
+            "are not part of this run is enforced from IDs a prior build persisted into "
+            "the same output directory."
+        ),
+    )
 
     sample = commands.add_parser("sample", help="Print one generated sample for a rendered config.")
     sample.add_argument("config", type=Path, help="Experiment YAML file.")
@@ -112,7 +121,14 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     if args.command == "build":
         loaded = load_experiment(args.config)
-        print(build_dataset(loaded, output_dir=args.output_dir, workers=args.workers))
+        print(
+            build_dataset(
+                loaded,
+                output_dir=args.output_dir,
+                workers=args.workers,
+                only_splits=frozenset(args.splits) if args.splits else None,
+            )
+        )
         return 0
 
     if args.command == "sample":

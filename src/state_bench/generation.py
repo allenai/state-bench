@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import random
 from collections import Counter
-from typing import Literal
 
 from state_bench.model import (
     AssignConstant,
@@ -14,8 +13,6 @@ from state_bench.model import (
     QueryMode,
     StateTrackingInstance,
 )
-
-PeriodicSamplingMethod = Literal["swap"]
 
 
 def generate_instance(
@@ -28,9 +25,7 @@ def generate_instance(
     query_mode: QueryMode = QueryMode.ALL,
     distinct_initial_values: bool = False,
     require_strict_witness: bool = True,
-    allow_self_reference: bool = False,
     periodic_constant_probability: float = 0.1,
-    periodic_sampling_method: PeriodicSamplingMethod = "swap",
     rng: random.Random,
 ) -> StateTrackingInstance:
     """Generate a periodic source trace and return the requested derivation."""
@@ -43,9 +38,7 @@ def generate_instance(
         query_mode=query_mode,
         distinct_initial_values=distinct_initial_values,
         require_strict_witness=require_strict_witness,
-        allow_self_reference=allow_self_reference,
         periodic_constant_probability=periodic_constant_probability,
-        periodic_sampling_method=periodic_sampling_method,
         rng=rng,
     )
     return derive_instance(source, complexity=complexity)
@@ -60,9 +53,7 @@ def generate_periodic_source(
     query_mode: QueryMode = QueryMode.ALL,
     distinct_initial_values: bool = False,
     require_strict_witness: bool = True,
-    allow_self_reference: bool = False,
     periodic_constant_probability: float = 0.1,
-    periodic_sampling_method: PeriodicSamplingMethod = "swap",
     rng: random.Random,
 ) -> StateTrackingInstance:
     """Generate the periodic source-of-truth for a three-family trace set."""
@@ -75,7 +66,6 @@ def generate_periodic_source(
         distinct_initial_values=distinct_initial_values,
         require_strict_witness=require_strict_witness,
         periodic_constant_probability=periodic_constant_probability,
-        periodic_sampling_method=periodic_sampling_method,
     )
 
     return _generate_swap_periodic_source(
@@ -212,7 +202,6 @@ def _validate_parameters(
     distinct_initial_values: bool,
     require_strict_witness: bool,
     periodic_constant_probability: float,
-    periodic_sampling_method: PeriodicSamplingMethod,
 ) -> None:
     if num_variables < 1 or num_values < 1:
         raise ValueError("num_variables and num_values must be positive")
@@ -222,8 +211,6 @@ def _validate_parameters(
         raise ValueError("distinct initial values require num_values >= num_variables")
     if not 0 <= periodic_constant_probability <= 1:
         raise ValueError("periodic constant probability must satisfy 0 <= probability <= 1")
-    if periodic_sampling_method != "swap":
-        raise ValueError(f"unknown periodic sampling method: {periodic_sampling_method!r}")
     if require_strict_witness:
         if max_extra_assignments < 3:
             raise ValueError("strict swap-periodic instances require room for three extra assignments")

@@ -106,10 +106,8 @@ class ConditionSpec(StrictModel):
 class GenerationSpec(StrictModel):
     query_mode: QueryMode = QueryMode.ALL
     require_strict_witness: bool = True
-    allow_self_reference: bool = False
     distinct_initial_values: bool = False
     periodic_constant_probability: float = Field(default=0.1, ge=0.0, le=1.0)
-    periodic_sampling_method: Literal["swap"] = "swap"
     conditions: list[ConditionSpec]
 
     @model_validator(mode="after")
@@ -200,7 +198,6 @@ class MultipleChoiceSpec(StrictModel):
 
 
 class OutputSpec(StrictModel):
-    local_format: Literal["jsonl"] = "jsonl"
     include_canonical_trace: bool = True
     include_final_state: bool = True
     # Large training corpora generally only need prompt/completion pairs. These
@@ -273,7 +270,6 @@ class TokenStratificationSpec(StrictModel):
 class HuggingFaceSpec(StrictModel):
     include_canonical_config: bool = True
     config_naming: str = "{formatter}--{complexity}"
-    data_format: Literal["parquet"] = "parquet"
     staging_workers: PositiveInt = 1
     token_strata: TokenStratificationSpec | None = None
     repository: HubRepositorySpec = HubRepositorySpec()
@@ -419,7 +415,6 @@ class LayoutSpec(StrictModel):
 class FormatterSpec(StrictModel):
     schema_version: Literal[1]
     name: str = Field(pattern=r"^[a-z0-9][a-z0-9-]*$")
-    renderer: Literal["template"]
     filler_corpus: str | None = None
     vocabulary: VocabularySpec
     templates: TemplatesSpec

@@ -15,7 +15,7 @@ from state_bench.config import load_experiment
 from state_bench.io import build_dataset
 
 ROOT = Path(__file__).resolve().parents[1]
-DEFAULT_EXPERIMENT = ROOT / "configs/experiments/long-context-train-profile.yaml"
+DEFAULT_EXPERIMENT = ROOT / "configs/experiments/default.yaml"
 
 
 class _ProfileDeadline(Exception):
@@ -50,9 +50,21 @@ def main(argv: Sequence[str] | None = None) -> int:
     try:
         with tempfile.TemporaryDirectory(prefix="state-bench-profile-") as output_dir:
             output_path = Path(output_dir)
+            # Profile the train split in isolation. Seed an empty test-ID set so
+            # the disjoint_from check is satisfied without first building test;
+            # with no exclusions this exercises the same generation path as a
+            # standalone train build.
+            semantics_dir = output_path / "semantics"
+            semantics_dir.mkdir(parents=True, exist_ok=True)
+            (semantics_dir / "test.ids").write_text("", encoding="utf-8")
             profiler.enable()
             try:
-                build_dataset(loaded, output_dir=output_path, workers=args.workers)
+                build_dataset(
+                    loaded,
+                    output_dir=output_path,
+                    workers=args.workers,
+                    only_splits=frozenset({"train"}),
+                )
             except _ProfileDeadline:
                 pass
             finally:
