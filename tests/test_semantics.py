@@ -9,6 +9,51 @@ from state_bench.model import AssignConstant, AssignVariable, Complexity, StateT
 from state_bench.semantics import dependency_lengths, dependency_summary, evaluate, sensitivity_summary
 
 
+def _instance(operations: tuple[object, ...], **overrides: object) -> StateTrackingInstance:
+    defaults: dict[str, object] = {
+        "complexity": Complexity.APERIODIC,
+        "num_variables": 2,
+        "num_values": 3,
+        "query": (0, 1),
+        "final_state": (1, 2),
+        "temporary_variable": None,
+    }
+    defaults.update(overrides)
+    return StateTrackingInstance.create(operations=operations, **defaults)  # type: ignore[arg-type]
+
+
+def test_instance_id_is_deterministic_and_field_sensitive() -> None:
+    base_ops = (AssignConstant(target=0, value=1), AssignConstant(target=1, value=2))
+    base = _instance(base_ops)
+    # Deterministic: identical semantics reproduce the same content hash.
+    assert base.instance_id == _instance(base_ops).instance_id
+    # Every semantic field participates in the digest.
+    variants = [
+        _instance(base_ops, complexity=Complexity.R_TRIVIAL),
+        _instance(base_ops, query=(0,)),
+        _instance(base_ops, final_state=(2, 1)),
+        _instance((AssignConstant(target=0, value=2), AssignConstant(target=1, value=2))),
+        _instance((AssignVariable(target=0, source=1), AssignConstant(target=1, value=2))),
+    ]
+    ids = {base.instance_id, *(variant.instance_id for variant in variants)}
+    assert len(ids) == len(variants) + 1
+
+
+def test_instance_ids_do_not_collide_across_generated_sources() -> None:
+    ids = set()
+    for seed in range(400):
+        source = generate_instance(
+            complexity=Complexity.PERIODIC,
+            num_variables=3,
+            num_values=5,
+            max_extra_assignments=12,
+            rng=random.Random(seed),
+        )
+        ids.update(instance.instance_id for instance in derive_variants(source))
+    # No accidental collisions between distinct semantic traces.
+    assert len(ids) > 400
+
+
 def test_prompt_examples() -> None:
     assert evaluate(
         num_variables=2,

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import hashlib
-import json
+import struct
 from dataclasses import dataclass
 from enum import StrEnum
 from typing import Any
@@ -88,18 +88,15 @@ class StateTrackingInstance:
             raise ValueError("the temporary variable must immediately follow ordinary variables")
         if len(final_state) != num_registers:
             raise ValueError("final_state length must equal the number of registers")
-        semantic_record = {
-            "complexity": complexity.value,
-            "num_variables": num_variables,
-            "num_values": num_values,
-            "operations": [operation.to_record() for operation in operations],
-            "query": list(query),
-            "final_state": list(final_state),
-            "temporary_variable": temporary_variable,
-        }
-        digest = hashlib.sha256(
-            json.dumps(semantic_record, sort_keys=True, separators=(",", ":")).encode()
-        ).hexdigest()[:20]
+        digest = _semantic_digest(
+            complexity=complexity,
+            num_variables=num_variables,
+            num_values=num_values,
+            operations=operations,
+            query=query,
+            final_state=final_state,
+            temporary_variable=temporary_variable,
+        )
         return cls(
             instance_id=digest,
             complexity=complexity,
@@ -128,6 +125,45 @@ class StateTrackingInstance:
             "final_state": list(self.final_state),
             "temporary_variable": self.temporary_variable,
         }
+
+
+def _semantic_digest(
+    *,
+    complexity: Complexity,
+    num_variables: int,
+    num_values: int,
+    operations: tuple[Operation, ...],
+    query: tuple[int, ...],
+    final_state: tuple[int, ...],
+    temporary_variable: int | None,
+) -> str:
+    """Content hash of a trace's semantics, stable across processes and runs.
+
+    The layout is length-prefixed and fixed-width so distinct traces cannot
+    collide by field boundary ambiguity: scalar header, then the query and
+    final-state arrays each preceded by their length, then the operation count
+    followed by a ``(kind, target, argument)`` int triple per operation.
+    """
+
+    buffer = bytearray(complexity.value.encode())
+    buffer += struct.pack(
+        "<iiii",
+        num_variables,
+        num_values,
+        -1 if temporary_variable is None else temporary_variable,
+        len(query),
+    )
+    buffer += struct.pack(f"<{len(query)}i", *query)
+    buffer += struct.pack(f"<{len(final_state) + 1}i", len(final_state), *final_state)
+    operation_ints: list[int] = []
+    for operation in operations:
+        if isinstance(operation, AssignConstant):
+            operation_ints += (0, operation.target, operation.value)
+        else:
+            operation_ints += (1, operation.target, operation.source)
+    buffer += struct.pack("<i", len(operations))
+    buffer += struct.pack(f"<{len(operation_ints)}i", *operation_ints)
+    return hashlib.sha256(buffer).hexdigest()[:20]
 
 
 def semantic_record_from_dict(record: dict[str, Any]) -> dict[str, Any]:
