@@ -116,36 +116,27 @@ def render_instance(
         ),
     }
 
-    # The set of legal placeholders is fixed across a render, so build each
-    # once here instead of allocating and sorting a fresh set per operation.
+    # The set of legal placeholders is fixed across a render, so build each once
+    # here. The value dicts start from the shared metadata and are mutated in
+    # place per operation, avoiding a fresh metadata merge on every assignment.
     metadata_keys = frozenset(metadata)
     constant_allowed = metadata_keys | {"target", "value"}
     reference_allowed = metadata_keys | {"target", "source"}
+    constant_values = dict(metadata)
+    reference_values = dict(metadata)
 
     instructions: list[str] = []
     for operation in instance.operations:
         if isinstance(operation, AssignConstant):
             template = _choose(formatter.templates.assign_constant, rng)
-            instructions.append(
-                _substitute(
-                    template,
-                    allowed=constant_allowed,
-                    target=surface_variables[operation.target],
-                    value=surface_values[operation.value],
-                    **metadata,
-                )
-            )
+            constant_values["target"] = surface_variables[operation.target]
+            constant_values["value"] = surface_values[operation.value]
+            instructions.append(_substitute(template, constant_allowed, constant_values))
         elif isinstance(operation, AssignVariable):
             template = _choose(formatter.templates.assign_reference, rng)
-            instructions.append(
-                _substitute(
-                    template,
-                    allowed=reference_allowed,
-                    target=surface_variables[operation.target],
-                    source=surface_variables[operation.source],
-                    **metadata,
-                )
-            )
+            reference_values["target"] = surface_variables[operation.target]
+            reference_values["source"] = surface_variables[operation.source]
+            instructions.append(_substitute(template, reference_allowed, reference_values))
 
     task_description = _optional_render(formatter.templates.task_description, metadata, rng)
     answer_prompt = _optional_render(formatter.templates.answer_prompt, metadata, rng)
@@ -327,19 +318,18 @@ def _render_program_with_filler(
             "filler_dots",
             "filler_text",
         }
-        filler_lines = [
-            _substitute(
-                _choose(template_value, rng),
-                allowed=filler_allowed,
-                variable=rng.choice(surface_variables),
-                value=rng.choice(surface_values),
-                filler_index=str(index + 1),
-                filler_dots="." * filler_width,
-                filler_text=corpus_lines[index],
-                **metadata,
-            )
-            for index in range(num_filler_lines)
-        ]
+        filler_values = dict(metadata)
+        filler_lines = []
+        for index in range(num_filler_lines):
+            # Preserve the original RNG draw order: template choice, then the
+            # variable and value picks.
+            chosen = _choose(template_value, rng)
+            filler_values["variable"] = rng.choice(surface_variables)
+            filler_values["value"] = rng.choice(surface_values)
+            filler_values["filler_index"] = str(index + 1)
+            filler_values["filler_dots"] = "." * filler_width
+            filler_values["filler_text"] = corpus_lines[index]
+            filler_lines.append(_substitute(chosen, filler_allowed, filler_values))
     total_lines = len(instructions) + num_filler_lines
     instruction_positions = set(rng.sample(range(total_lines), len(instructions)))
     instruction_iterator = iter(instructions)
@@ -411,13 +401,15 @@ def _optional_render(
 ) -> str:
     if value is None:
         return ""
-    return _substitute(_choose(value, rng), allowed=frozenset(metadata), **metadata)
+    return _substitute(_choose(value, rng), frozenset(metadata), metadata)
 
 
-def _substitute(template: str, *, allowed: frozenset[str], **values: str) -> str:
+def _substitute(template: str, allowed: frozenset[str], values: dict[str, str]) -> str:
     # FormatterSpec validates every template once while loading configuration.
     # Cache the defensive runtime check for programmatically constructed specs.
     # ``allowed`` is a hashable frozenset, so the cache keys on it directly.
+    # ``values`` may be reused across calls (only read here), which lets the
+    # per-operation render loop avoid rebuilding the shared metadata each time.
     _validate_runtime_template(template, allowed)
     try:
         return "".join(
@@ -502,14 +494,10 @@ def _render_completion(
     surface_values: tuple[str, ...],
 ) -> str:
     completion_allowed = frozenset(metadata) | {"variable", "value"}
-    assertions = [
-        _substitute(
-            assertion_template,
-            allowed=completion_allowed,
-            variable=surface_variables[variable],
-            value=surface_values[state[variable]],
-            **metadata,
-        )
-        for variable in instance.query
-    ]
+    completion_values = dict(metadata)
+    assertions: list[str] = []
+    for variable in instance.query:
+        completion_values["variable"] = surface_variables[variable]
+        completion_values["value"] = surface_values[state[variable]]
+        assertions.append(_substitute(assertion_template, completion_allowed, completion_values))
     return formatter.layout.completion_separator.join(assertions)
