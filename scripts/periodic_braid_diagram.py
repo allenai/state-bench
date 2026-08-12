@@ -13,7 +13,6 @@ import matplotlib.patheffects as pe
 import matplotlib.pyplot as plt
 import numpy as np
 import seaborn as sns
-from matplotlib.lines import Line2D
 
 
 def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
@@ -220,14 +219,12 @@ def render_braid(record: dict[str, Any], *, output: Path, title: str | None) -> 
     for x0, x1, source, target, value in crossings:
         crossing_x, crossing_y = _smooth_crossing(x0, x1, source, target)
         _draw_strand(axis, crossing_x, crossing_y, colors[value], zorder=3)
-    for step, target, value in constants:
+    # Squares mark every value introduced by a constant assignment: the initial
+    # register values and each mid-trace constant. Copies carry no marker.
+    for step, target, value in [*((0, row, value) for row, value in enumerate(initial)), *constants]:
         axis.scatter(
             step, target, s=54, marker="s", color=colors[value],
             edgecolor=_BACKGROUND, linewidth=1.1, zorder=5,
-        )
-    for row, value in enumerate(initial):
-        axis.scatter(
-            0, row, s=46, color=colors[value], edgecolor=_BACKGROUND, linewidth=1.1, zorder=5
         )
 
     # Read off the final state at the right edge, colored to match each strand.
@@ -255,39 +252,6 @@ def render_braid(record: dict[str, Any], *, output: Path, title: str | None) -> 
         spine.set_visible(False)
     if title:
         axis.set_title(title, color=_INK, pad=12)
-
-    value_handles = [
-        Line2D([0], [0], color=colors[value], linewidth=_STRAND_WIDTH, solid_capstyle="round",
-               label=str(value))
-        for value in observed_values
-    ]
-    value_legend = figure.legend(
-        handles=value_handles,
-        title="value",
-        bbox_to_anchor=(0.998, 0.5),
-        loc="center left",
-        frameon=False,
-        handlelength=1.3,
-        labelspacing=0.5,
-        ncols=max(1, (len(value_handles) + 7) // 8),
-    )
-    value_legend.get_title().set_color(_INK)
-
-    operation_handles = [
-        Line2D([0], [0], marker="o", color=_INK, linewidth=0, markersize=7,
-               markeredgecolor=_BACKGROUND, label="initial value"),
-        Line2D([0], [0], marker="s", color=_INK, linewidth=0, markersize=7,
-               markeredgecolor=_BACKGROUND, label="new constant"),
-    ]
-    axis.legend(
-        handles=operation_handles,
-        loc="upper center",
-        bbox_to_anchor=(0.5, -0.16),
-        frameon=False,
-        ncols=2,
-        handletextpad=0.4,
-        columnspacing=1.6,
-    )
 
     output.parent.mkdir(parents=True, exist_ok=True)
     figure.savefig(output, dpi=300, bbox_inches="tight", facecolor=_BACKGROUND)
