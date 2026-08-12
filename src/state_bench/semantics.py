@@ -156,38 +156,41 @@ def sensitivity_summary(instance: StateTrackingInstance) -> SensitivitySummary:
         aggregate_live_variables += live_variables
         state_count += 1
 
-    for index in range(len(instance.operations) - 1, -1, -1):
-        operation = instance.operations[index]
-        _validate_variable(operation.target, instance.num_registers)
-        if isinstance(operation, AssignConstant):
-            total_affected_outputs, live_variables = _replace_influence(
-                output_bits,
-                operation.target,
-                0,
-                included=operation.target < instance.num_variables,
-                total_affected_outputs=total_affected_outputs,
-                live_variables=live_variables,
-            )
+    # Hoist attribute lookups and inline the reverse-live bitset updates; this
+    # loop runs once per operation and dominates sensitivity's cost.
+    operations = instance.operations
+    num_registers = instance.num_registers
+    num_variables = instance.num_variables
+    for index in range(len(operations) - 1, -1, -1):
+        operation = operations[index]
+        target = operation.target
+        if not 0 <= target < num_registers:
+            raise ValueError(f"variable index {target} is outside [0, {num_registers})")
+        if type(operation) is AssignConstant:
+            previous = output_bits[target]
+            if previous:
+                output_bits[target] = 0
+                if target < num_variables:
+                    total_affected_outputs -= previous.bit_count()
+                    live_variables -= 1
         else:
-            _validate_variable(operation.source, instance.num_registers)
-            if operation.source != operation.target:
-                target_bits = output_bits[operation.target]
-                total_affected_outputs, live_variables = _replace_influence(
-                    output_bits,
-                    operation.target,
-                    0,
-                    included=operation.target < instance.num_variables,
-                    total_affected_outputs=total_affected_outputs,
-                    live_variables=live_variables,
-                )
-                total_affected_outputs, live_variables = _replace_influence(
-                    output_bits,
-                    operation.source,
-                    output_bits[operation.source] | target_bits,
-                    included=operation.source < instance.num_variables,
-                    total_affected_outputs=total_affected_outputs,
-                    live_variables=live_variables,
-                )
+            source = operation.source
+            if not 0 <= source < num_registers:
+                raise ValueError(f"variable index {source} is outside [0, {num_registers})")
+            if source != target:
+                target_bits = output_bits[target]
+                if target_bits:
+                    output_bits[target] = 0
+                    if target < num_variables:
+                        total_affected_outputs -= target_bits.bit_count()
+                        live_variables -= 1
+                previous_source = output_bits[source]
+                merged_source = previous_source | target_bits
+                if merged_source != previous_source:
+                    output_bits[source] = merged_source
+                    if source < num_variables:
+                        total_affected_outputs += merged_source.bit_count() - previous_source.bit_count()
+                        live_variables += (merged_source != 0) - (previous_source != 0)
         if index in sample_boundaries:
             aggregate_affected_outputs += total_affected_outputs
             aggregate_live_variables += live_variables
@@ -217,49 +220,57 @@ def _sensitivity_sample_boundaries(
 ) -> frozenset[int]:
     """Return operation-prefix lengths representing complete semantic steps."""
 
-    if instance.temporary_variable is None:
-        return frozenset(range(start, len(instance.operations) + 1))
+    temporary = instance.temporary_variable
+    operations = instance.operations
+    length = len(operations)
+    if temporary is None:
+        return frozenset(range(start, length + 1))
 
+    num_variables = instance.num_variables
     boundaries = {start}
     index = start
-    while index < len(instance.operations):
-        if _is_tmp_swap(instance, index=index):
+    while index < length:
+        # Inline TMP-swap recognition (was _is_tmp_swap) to avoid a per-index
+        # call and operation-slice; the fields are frozen dataclasses, so
+        # ``type(...) is`` matches the previous isinstance checks exactly.
+        is_swap = False
+        if index + 2 < length:
+            load = operations[index]
+            replace = operations[index + 1]
+            restore = operations[index + 2]
+            left = replace.target
+            right = restore.target
+            is_swap = (
+                load.target == temporary
+                and 0 <= left < num_variables
+                and 0 <= right < num_variables
+                and left != right
+                and (
+                    (
+                        type(load) is AssignConstant
+                        and type(replace) is AssignConstant
+                        and type(restore) is AssignConstant
+                    )
+                    or (
+                        type(load) is AssignVariable
+                        and type(replace) is AssignVariable
+                        and type(restore) is AssignVariable
+                        and load.source == left
+                        and replace.source == right
+                        and restore.source == temporary
+                    )
+                )
+            )
+        if is_swap:
             index += 3
             boundaries.add(index)
-        elif instance.operations[index].target == instance.temporary_variable:
+        elif operations[index].target == temporary:
             # Budget-padding scratch loads do not change ordinary state.
             index += 1
         else:
             index += 1
             boundaries.add(index)
     return frozenset(boundaries)
-
-
-def _is_tmp_swap(instance: StateTrackingInstance, *, index: int) -> bool:
-    """Recognize one TMP-expanded swap in a source or structurally derived trace."""
-
-    if instance.temporary_variable is None or index + 2 >= len(instance.operations):
-        return False
-    load, replace, restore = instance.operations[index : index + 3]
-    left = replace.target
-    right = restore.target
-    if not (
-        load.target == instance.temporary_variable
-        and 0 <= left < instance.num_variables
-        and 0 <= right < instance.num_variables
-        and left != right
-    ):
-        return False
-    if all(isinstance(operation, AssignConstant) for operation in (load, replace, restore)):
-        return True
-    return (
-        isinstance(load, AssignVariable)
-        and isinstance(replace, AssignVariable)
-        and isinstance(restore, AssignVariable)
-        and load.source == left
-        and replace.source == right
-        and restore.source == instance.temporary_variable
-    )
 
 
 def _fully_initialized_boundary(*, num_variables: int, operations: Sequence[Operation]) -> int:
@@ -272,29 +283,6 @@ def _fully_initialized_boundary(*, num_variables: int, operations: Sequence[Oper
         if len(initialized) == num_variables:
             return index + 1
     raise ValueError("sensitivity requires every variable to be initialized")
-
-
-def _replace_influence(
-    output_bits: list[int],
-    variable: int,
-    replacement: int,
-    *,
-    included: bool,
-    total_affected_outputs: int,
-    live_variables: int,
-) -> tuple[int, int]:
-    """Replace one reverse-live bitset while maintaining aggregate counters."""
-
-    previous = output_bits[variable]
-    if previous == replacement:
-        return total_affected_outputs, live_variables
-    output_bits[variable] = replacement
-    if not included:
-        return total_affected_outputs, live_variables
-    return (
-        total_affected_outputs + replacement.bit_count() - previous.bit_count(),
-        live_variables + (replacement != 0) - (previous != 0),
-    )
 
 
 def _validate_variable(variable: int, num_variables: int) -> None:
