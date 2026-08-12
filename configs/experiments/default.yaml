@@ -110,7 +110,10 @@ formatters:
   - config: ../formats/ruler.yaml
 
 output:
-  include_canonical_trace: true
+  # The formatter-independent operations trace already lives in canonical/;
+  # duplicating it into every rendered row bloats the long-sequence rows and
+  # their write cost, so keep it out of the rendered artifacts.
+  include_canonical_trace: false
   include_final_state: true
   # The training corpus is consumed as prompt/completion pairs, so avoid storing
   # redundant semantic traces, choices, and a canonical copy for every train
