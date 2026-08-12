@@ -161,6 +161,10 @@ def render_braid(record: dict[str, Any], *, output: Path, title: str | None) -> 
     colors = _value_palette(observed_values)
 
     sns.set_theme(style="white", context="paper")
+    # Pin DejaVu Sans everywhere; register names use DejaVu Sans Mono below.
+    plt.rcParams["font.family"] = "sans-serif"
+    plt.rcParams["font.sans-serif"] = ["DejaVu Sans"]
+    plt.rcParams["font.monospace"] = ["DejaVu Sans Mono"]
     # Keep text as editable glyphs in vector output (.pdf / .svg).
     plt.rcParams["svg.fonttype"] = "none"
     plt.rcParams["pdf.fonttype"] = 42
@@ -239,7 +243,7 @@ def render_braid(record: dict[str, Any], *, output: Path, title: str | None) -> 
     ticks = np.unique(np.linspace(0, max_step, tick_count, dtype=int))
     axis.set_xticks(ticks)
     axis.set_yticks(range(len(labels)))
-    axis.set_yticklabels(labels)
+    axis.set_yticklabels(labels, fontfamily="monospace")
     for tick_label, row in zip(axis.get_yticklabels(), range(len(labels)), strict=True):
         if row == temporary_row:
             tick_label.set_style("italic")
