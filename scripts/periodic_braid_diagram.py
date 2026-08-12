@@ -19,7 +19,12 @@ from matplotlib.lines import Line2D
 def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("input", type=Path, help="Canonical JSONL dataset input.")
-    parser.add_argument("--output", type=Path, required=True, help="Destination image path.")
+    parser.add_argument(
+        "--output",
+        type=Path,
+        required=True,
+        help="Destination image path; use a .pdf or .svg suffix for vector output.",
+    )
     selection = parser.add_mutually_exclusive_group()
     selection.add_argument(
         "--instance-id",
@@ -157,10 +162,13 @@ def render_braid(record: dict[str, Any], *, output: Path, title: str | None) -> 
     colors = _value_palette(observed_values)
 
     sns.set_theme(style="white", context="paper")
+    # Keep text as editable glyphs in vector output (.pdf / .svg).
     plt.rcParams["svg.fonttype"] = "none"
+    plt.rcParams["pdf.fonttype"] = 42
+    plt.rcParams["ps.fonttype"] = 42
     max_step = len(operations)
     width = min(30.0, max(6.5, 0.3 * (max_step + 1) + 1.6))
-    height = max(2.6, 0.62 * len(labels) + 1.4)
+    height = max(1.1, 0.17 * len(labels) + 0.6)
     figure, axis = plt.subplots(figsize=(width, height))
     figure.patch.set_facecolor(_BACKGROUND)
     axis.set_facecolor(_BACKGROUND)
@@ -222,6 +230,14 @@ def render_braid(record: dict[str, Any], *, output: Path, title: str | None) -> 
             0, row, s=46, color=colors[value], edgecolor=_BACKGROUND, linewidth=1.1, zorder=5
         )
 
+    # Read off the final state at the right edge, colored to match each strand.
+    final_label_x = max_step + 0.35
+    for row, value in enumerate(state):
+        axis.text(
+            final_label_x, row, str(value), va="center", ha="left",
+            color=colors[value], fontweight="bold", fontsize=9, zorder=6,
+        )
+
     tick_count = min(12, max_step + 1)
     ticks = np.unique(np.linspace(0, max_step, tick_count, dtype=int))
     axis.set_xticks(ticks)
@@ -231,7 +247,7 @@ def render_braid(record: dict[str, Any], *, output: Path, title: str | None) -> 
         if row == temporary_row:
             tick_label.set_style("italic")
             tick_label.set_color("#8a8a92")
-    axis.set_xlim(-0.6, max_step + 0.6)
+    axis.set_xlim(-0.6, max_step + 1.1)
     axis.set_ylim(len(labels) - 0.4, -0.6)
     axis.set_xlabel("assignment step", color=_INK)
     axis.tick_params(axis="both", length=0, colors=_INK)
