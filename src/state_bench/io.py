@@ -18,6 +18,7 @@ from itertools import batched, repeat
 from pathlib import Path
 from typing import Any, cast
 
+import orjson
 from tqdm.auto import tqdm
 
 from state_bench.config import (
@@ -796,7 +797,10 @@ def read_jsonl(path: Path) -> list[dict[str, Any]]:
 
 
 def write_json_line(handle: Any, record: Mapping[str, Any]) -> None:
-    handle.write(json.dumps(record, ensure_ascii=False, separators=(",", ":")))
+    # orjson emits the same compact UTF-8 JSON as json.dumps(ensure_ascii=False,
+    # separators=(",", ":")) — including shortest-round-trip floats — but several
+    # times faster, which dominates the write cost for long-sequence rows.
+    handle.write(orjson.dumps(record).decode())
     handle.write("\n")
 
 
