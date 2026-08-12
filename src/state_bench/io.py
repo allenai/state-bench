@@ -18,6 +18,7 @@ from itertools import batched, repeat
 from pathlib import Path
 from typing import Any, cast
 
+import orjson
 from tqdm.auto import tqdm
 
 from state_bench.config import (
@@ -44,6 +45,11 @@ from state_bench.scheduling import (
 from state_bench.semantics import dependency_summary, sensitivity_summary
 
 _MINIMAL_SOURCE_CHUNK_SIZE = 1024
+# Full (non-minimal) chunks carry the richer per-row payload and may include very
+# long sequences. Chunks are formed per (split, condition, variable-count) block,
+# which holds relatively few sources, so keep the batch small enough to produce
+# several chunks per worker for even load-balancing.
+_FULL_SOURCE_CHUNK_SIZE = 16
 
 
 def _available_cpu_count() -> int | None:
@@ -162,6 +168,60 @@ class _MinimalChunkResult:
     files: tuple[tuple[str, Path, int], ...]
 
 
+@dataclass(frozen=True, slots=True)
+class _EmitContext:
+    """Everything needed to turn one generated sample into its output rows.
+
+    Shared across a split's samples and picklable, so the same emission logic
+    runs unchanged in the serial main loop and in the parallel chunk worker.
+    """
+
+    formatters: tuple[FormatterSpec, ...]
+    config_naming: str
+    split_name: str
+    dataset_seed: int
+    write_canonical: bool
+    minimal_output: bool
+    include_canonical_trace: bool
+    include_final_state: bool
+    track_unique: bool
+    num_distractors: int
+    shuffle_choices: bool
+
+
+@dataclass(frozen=True, slots=True)
+class _SampleEmission:
+    """Serialized output rows for one source, plus the ids the main loop tracks.
+
+    Each line is ``(target, json)`` where target is ``"canonical"`` or a rendered
+    config name; ``unique_pairs`` is ``(count_key, instance_id)`` when unique
+    semantics are tracked.
+    """
+
+    lines: tuple[tuple[str, str], ...]
+    instance_ids: tuple[str, ...]
+    unique_pairs: tuple[tuple[str, str], ...]
+
+
+@dataclass(frozen=True, slots=True)
+class _FullChunkTask:
+    """A bounded source range fully rendered and serialized by one worker."""
+
+    chunk_index: int
+    samples: tuple[_GenerationTask, ...]
+    context: _EmitContext
+    chunk_dir: Path
+
+
+@dataclass(frozen=True, slots=True)
+class _FullChunkResult:
+    chunk_index: int
+    source_count: int
+    files: tuple[tuple[str, Path, int], ...]
+    instance_ids: tuple[str, ...]
+    unique_pairs: tuple[tuple[str, str], ...]
+
+
 def _generate_instances(
     task: _GenerationTask,
 ) -> _GeneratedSample:
@@ -260,6 +320,174 @@ def _write_minimal_chunk(task: _MinimalChunkTask) -> _MinimalChunkResult:
             (config_name, paths[config_name], counts[config_name])
             for config_name in sorted(paths)
         ),
+    )
+
+
+def _serialize_line(record: Mapping[str, Any]) -> str:
+    return orjson.dumps(record).decode()
+
+
+def _emit_sample_records(generated: _GeneratedSample, context: _EmitContext) -> _SampleEmission:
+    """Build every output row for one generated source (canonical + rendered).
+
+    This is the single source of truth for non-minimal-chunk emission; the serial
+    main loop and the parallel chunk worker both call it, so their output is
+    identical by construction.
+    """
+
+    source_example_id = generated.source_example_id
+    plan_item = generated.plan_item
+    filler_item = generated.filler_item
+    source = generated.source
+    lines: list[tuple[str, str]] = []
+    instance_ids: list[str] = []
+    unique_pairs: list[tuple[str, str]] = []
+    needs_canonical_record = context.write_canonical or not context.minimal_output
+    for complexity, instance in zip(Complexity, generated.instances, strict=True):
+        example_id = _derived_example_id(source_example_id, complexity)
+        sensitivity = sensitivity_summary(instance)
+        dependencies = (
+            dependency_summary(instance)
+            if needs_canonical_record or not context.minimal_output
+            else None
+        )
+        canonical_record: dict[str, Any] | None = None
+        if needs_canonical_record:
+            assert dependencies is not None
+            canonical_record = {
+                "example_id": example_id,
+                "source_example_id": source_example_id,
+                "source_instance_id": source.instance_id,
+                **instance.to_record(),
+                **dependencies.to_record(),
+                **sensitivity.to_record(),
+                "num_extra_assignments": (
+                    len(instance.operations) - instance.num_initial_assignments
+                ),
+                "target_extra_assignments": plan_item.target_extra_assignments,
+                "filler_proportion": filler_item.proportion,
+                "filler_distraction": filler_item.distraction,
+            }
+        if context.write_canonical:
+            assert canonical_record is not None
+            lines.append(("canonical", _serialize_line(canonical_record)))
+        if context.track_unique:
+            unique_pairs.append((f"canonical/{context.split_name}", instance.instance_id))
+        instance_ids.append(instance.instance_id)
+
+        include_trace = not context.minimal_output and context.include_canonical_trace
+        source_operations = (
+            [operation.to_record() for operation in source.operations] if include_trace else None
+        )
+        incorrect_states = (
+            ()
+            if context.minimal_output
+            else generate_incorrect_states(
+                instance,
+                num_distractors=context.num_distractors,
+                rng=random.Random(derive_seed(context.dataset_seed, "distractors", example_id)),
+            )
+        )
+
+        for formatter in context.formatters:
+            config_name = hub_config_name(
+                context.config_naming, formatter=formatter.name, complexity=complexity.value
+            )
+            surface_seed = derive_seed(
+                context.dataset_seed, "surface", source_example_id, formatter.name
+            )
+            rendered = render_instance(
+                instance,
+                formatter,
+                rng=random.Random(surface_seed),
+                incorrect_states=incorrect_states,
+                shuffle_choices=context.shuffle_choices,
+                filler_proportion=filler_item.proportion,
+                filler_distraction=filler_item.distraction,
+                include_diagnostics=not context.minimal_output,
+                dependencies=dependencies,
+                sensitivity=sensitivity,
+            )
+            rendered_record: dict[str, Any]
+            if context.minimal_output:
+                rendered_record = cast(
+                    "dict[str, Any]",
+                    _minimal_rendered_record(
+                        example_id=example_id,
+                        source_example_id=source_example_id,
+                        source_instance_id=source.instance_id,
+                        rendered=rendered,
+                    ),
+                )
+            else:
+                rendered_record = {
+                    "example_id": example_id,
+                    "source_example_id": source_example_id,
+                    "source_instance_id": source.instance_id,
+                    **rendered.to_record(),
+                    "num_extra_assignments": (
+                        len(instance.operations) - instance.num_initial_assignments
+                    ),
+                    "target_extra_assignments": plan_item.target_extra_assignments,
+                }
+            if include_trace:
+                assert canonical_record is not None
+                assert source_operations is not None
+                rendered_record["operations"] = canonical_record["operations"]
+                rendered_record["source_operations"] = source_operations
+                rendered_record["query"] = canonical_record["query"]
+            if not context.minimal_output and context.include_final_state:
+                assert canonical_record is not None
+                rendered_record["final_state"] = canonical_record["final_state"]
+            # Keep the training payload alongside the evaluation metadata so raw
+            # rendered JSONL is directly consumable by Dolma and HF JSON.
+            rendered_record.update(
+                _document_fields(
+                    example_id=example_id,
+                    prefix=rendered.prefix,
+                    completion=rendered.completion,
+                )
+            )
+            lines.append((config_name, _serialize_line(rendered_record)))
+            if context.track_unique:
+                unique_pairs.append((f"{config_name}/{context.split_name}", instance.instance_id))
+
+    return _SampleEmission(tuple(lines), tuple(instance_ids), tuple(unique_pairs))
+
+
+def _write_full_chunk(task: _FullChunkTask) -> _FullChunkResult:
+    """Generate, render, serialize, and write one non-minimal chunk in a worker."""
+
+    handles: dict[str, Any] = {}
+    paths: dict[str, Path] = {}
+    counts: Counter[str] = Counter()
+    instance_ids: list[str] = []
+    unique_pairs: list[tuple[str, str]] = []
+    try:
+        for sample_task in task.samples:
+            emission = _emit_sample_records(_generate_instances(sample_task), task.context)
+            for target, line in emission.lines:
+                handle = handles.get(target)
+                if handle is None:
+                    path = task.chunk_dir / target / f"{task.chunk_index:08d}.jsonl"
+                    path.parent.mkdir(parents=True, exist_ok=True)
+                    paths[target] = path
+                    handle = path.open("w", encoding="utf-8")
+                    handles[target] = handle
+                handle.write(line)
+                handle.write("\n")
+                counts[target] += 1
+            instance_ids.extend(emission.instance_ids)
+            unique_pairs.extend(emission.unique_pairs)
+    finally:
+        for handle in handles.values():
+            handle.close()
+    return _FullChunkResult(
+        chunk_index=task.chunk_index,
+        source_count=len(task.samples),
+        files=tuple((target, paths[target], counts[target]) for target in sorted(paths)),
+        instance_ids=tuple(instance_ids),
+        unique_pairs=tuple(unique_pairs),
     )
 
 
@@ -544,170 +772,90 @@ def build_dataset(
                                 counts[f"{config_name}/{split_name}"] += row_count
                             progress.update(len(Complexity) * result.source_count)
                         continue
-                    generated_samples = (
-                        _executor_map(
-                            executor,
-                            _generate_instances,
-                            tasks,
-                            chunksize=256,
-                            buffersize=max(1, workers * 4),
-                        )
-                        if executor is not None
-                        else map(_generate_instances, tasks)
+                    emit_context = _EmitContext(
+                        formatters=tuple(
+                            formatter
+                            for formatter in loaded.formatters
+                            if condition_uses_formatter(condition, formatter.name)
+                            and split_uses_formatter(split_spec, formatter.name)
+                        ),
+                        config_naming=spec.huggingface.config_naming,
+                        split_name=split_name,
+                        dataset_seed=spec.dataset.seed,
+                        write_canonical=split_name in canonical_handles,
+                        minimal_output=split_name in spec.output.minimal_splits,
+                        include_canonical_trace=spec.output.include_canonical_trace,
+                        include_final_state=spec.output.include_final_state,
+                        track_unique=spec.output.track_unique_semantics,
+                        num_distractors=spec.output.multiple_choice.num_distractors,
+                        shuffle_choices=spec.output.multiple_choice.shuffle_choices,
                     )
-                    for generated in generated_samples:
-                        source_example_id = generated.source_example_id
-                        plan_item = generated.plan_item
-                        filler_item = generated.filler_item
-                        source = generated.source
-                        instances = generated.instances
-                        for complexity, instance in zip(Complexity, instances, strict=True):
-                            example_id = _derived_example_id(source_example_id, complexity)
-                            needs_canonical_record = (
-                                split_name in canonical_handles
-                                or split_name not in spec.output.minimal_splits
-                            )
-                            minimal_output = split_name in spec.output.minimal_splits
-                            # Both summaries depend only on the instance; compute
-                            # once and share them with the canonical record and
-                            # every formatter render below.
-                            sensitivity = sensitivity_summary(instance)
-                            dependencies = (
-                                dependency_summary(instance)
-                                if needs_canonical_record or not minimal_output
-                                else None
-                            )
-                            canonical_record: dict[str, Any] | None = None
-                            if needs_canonical_record:
-                                assert dependencies is not None
-                                canonical_record = {
-                                    "example_id": example_id,
-                                    "source_example_id": source_example_id,
-                                    "source_instance_id": source.instance_id,
-                                    **instance.to_record(),
-                                    **dependencies.to_record(),
-                                    **sensitivity.to_record(),
-                                    "num_extra_assignments": (
-                                        len(instance.operations) - instance.num_initial_assignments
-                                    ),
-                                    "target_extra_assignments": plan_item.target_extra_assignments,
-                                    "filler_proportion": filler_item.proportion,
-                                    "filler_distraction": filler_item.distraction,
-                                }
-                            if split_name in canonical_handles:
-                                assert canonical_record is not None
-                                write_json_line(canonical_handles[split_name], canonical_record)
-                                counts[f"canonical/{split_name}"] += 1
-                            if spec.output.track_unique_semantics:
-                                unique_semantics[f"canonical/{split_name}"].add(instance.instance_id)
-                            # Retain only semantics that a later split needs for
-                            # disjointness. Keeping every training ID is prohibitive
-                            # for multi-billion-token builds.
-                            if spec.output.track_unique_semantics or split_name in referenced_splits:
-                                split_semantics[split_name].add(instance.instance_id)
+                    # Retain only semantics that a later split needs for disjointness;
+                    # keeping every training ID is prohibitive for large builds.
+                    track_split_semantics = (
+                        spec.output.track_unique_semantics or split_name in referenced_splits
+                    )
 
-                            include_trace = (
-                                split_name not in spec.output.minimal_splits
-                                and spec.output.include_canonical_trace
-                            )
-                            source_operations = (
-                                [operation.to_record() for operation in source.operations]
-                                if include_trace
-                                else None
-                            )
-                            incorrect_states = (
-                                ()
-                                if minimal_output
-                                else generate_incorrect_states(
-                                    instance,
-                                    num_distractors=spec.output.multiple_choice.num_distractors,
-                                    rng=random.Random(
-                                        derive_seed(spec.dataset.seed, "distractors", example_id)
-                                    ),
-                                )
-                            )
+                    def _handle_for(target: str, split: str = split_name) -> Any:
+                        if target == "canonical":
+                            return canonical_handles[split]
+                        return rendered_handles[(target, split)]
 
-                            for formatter in loaded.formatters:
-                                if not (
-                                    condition_uses_formatter(condition, formatter.name)
-                                    and split_uses_formatter(split_spec, formatter.name)
-                                ):
-                                    continue
-                                config_name = hub_config_name(
-                                    spec.huggingface.config_naming,
-                                    formatter=formatter.name,
-                                    complexity=complexity.value,
+                    if executor is not None:
+                        # Render and serialize in workers, writing per-chunk files
+                        # concatenated here; only compact ids travel back over IPC.
+                        if chunk_root is None:
+                            chunk_root = Path(tempfile.mkdtemp(prefix=".state-bench-chunks-", dir=root))
+                        full_chunk_tasks = (
+                            _FullChunkTask(
+                                chunk_index=chunk_index,
+                                samples=tuple(sample_batch),
+                                context=emit_context,
+                                chunk_dir=chunk_root,
+                            )
+                            for chunk_index, sample_batch in enumerate(
+                                batched(tasks, _FULL_SOURCE_CHUNK_SIZE)
+                            )
+                        )
+                        chunk_results = _executor_map(
+                            executor,
+                            _write_full_chunk,
+                            full_chunk_tasks,
+                            chunksize=1,
+                            buffersize=max(1, workers * 2),
+                        )
+                        for result in chunk_results:
+                            for target, chunk_path, row_count in result.files:
+                                with chunk_path.open(encoding="utf-8") as chunk_handle:
+                                    shutil.copyfileobj(chunk_handle, _handle_for(target))
+                                chunk_path.unlink()
+                                count_key = (
+                                    f"canonical/{split_name}"
+                                    if target == "canonical"
+                                    else f"{target}/{split_name}"
                                 )
-                                surface_seed = derive_seed(
-                                    spec.dataset.seed,
-                                    "surface",
-                                    source_example_id,
-                                    formatter.name,
+                                counts[count_key] += row_count
+                            if track_split_semantics:
+                                split_semantics[split_name].update(result.instance_ids)
+                            for unique_key, instance_id in result.unique_pairs:
+                                unique_semantics[unique_key].add(instance_id)
+                            progress.update(len(Complexity) * result.source_count)
+                    else:
+                        for generated in map(_generate_instances, tasks):
+                            emission = _emit_sample_records(generated, emit_context)
+                            for target, line in emission.lines:
+                                _write_line(_handle_for(target), line)
+                                count_key = (
+                                    f"canonical/{split_name}"
+                                    if target == "canonical"
+                                    else f"{target}/{split_name}"
                                 )
-                                rendered = render_instance(
-                                    instance,
-                                    formatter,
-                                    rng=random.Random(surface_seed),
-                                    incorrect_states=incorrect_states,
-                                    shuffle_choices=spec.output.multiple_choice.shuffle_choices,
-                                    filler_proportion=filler_item.proportion,
-                                    filler_distraction=filler_item.distraction,
-                                    include_diagnostics=not minimal_output,
-                                    dependencies=dependencies,
-                                    sensitivity=sensitivity,
-                                )
-                                rendered_record: dict[str, Any]
-                                if minimal_output:
-                                    rendered_record = cast(
-                                        "dict[str, Any]",
-                                        _minimal_rendered_record(
-                                            example_id=example_id,
-                                            source_example_id=source_example_id,
-                                            source_instance_id=source.instance_id,
-                                            rendered=rendered,
-                                        ),
-                                    )
-                                else:
-                                    rendered_record = {
-                                    "example_id": example_id,
-                                    "source_example_id": source_example_id,
-                                    "source_instance_id": source.instance_id,
-                                    **rendered.to_record(),
-                                    "num_extra_assignments": (
-                                        len(instance.operations) - instance.num_initial_assignments
-                                    ),
-                                    "target_extra_assignments": plan_item.target_extra_assignments,
-                                    }
-                                if include_trace:
-                                    assert canonical_record is not None
-                                    assert source_operations is not None
-                                    rendered_record["operations"] = canonical_record["operations"]
-                                    rendered_record["source_operations"] = source_operations
-                                    rendered_record["query"] = canonical_record["query"]
-                                if (
-                                    split_name not in spec.output.minimal_splits
-                                    and spec.output.include_final_state
-                                ):
-                                    assert canonical_record is not None
-                                    rendered_record["final_state"] = canonical_record["final_state"]
-                                # Keep the training payload alongside the evaluation metadata so
-                                # raw rendered JSONL is directly consumable by Dolma and HF JSON.
-                                rendered_record.update(
-                                    _document_fields(
-                                        example_id=example_id,
-                                        prefix=rendered.prefix,
-                                        completion=rendered.completion,
-                                    )
-                                )
-                                write_json_line(
-                                    rendered_handles[(config_name, split_name)], rendered_record
-                                )
-                                counts[f"{config_name}/{split_name}"] += 1
-                                if spec.output.track_unique_semantics:
-                                    unique_semantics[f"{config_name}/{split_name}"].add(
-                                        instance.instance_id
-                                    )
-                            progress.update()
+                                counts[count_key] += 1
+                            if track_split_semantics:
+                                split_semantics[split_name].update(emission.instance_ids)
+                            for unique_key, instance_id in emission.unique_pairs:
+                                unique_semantics[unique_key].add(instance_id)
+                            progress.update(len(Complexity))
     finally:
         progress.close()
         if executor is not None:
@@ -796,7 +944,14 @@ def read_jsonl(path: Path) -> list[dict[str, Any]]:
 
 
 def write_json_line(handle: Any, record: Mapping[str, Any]) -> None:
-    handle.write(json.dumps(record, ensure_ascii=False, separators=(",", ":")))
+    # orjson emits the same compact UTF-8 JSON as json.dumps(ensure_ascii=False,
+    # separators=(",", ":")) — including shortest-round-trip floats — but several
+    # times faster, which dominates the write cost for long-sequence rows.
+    _write_line(handle, _serialize_line(record))
+
+
+def _write_line(handle: Any, line: str) -> None:
+    handle.write(line)
     handle.write("\n")
 
 
