@@ -230,27 +230,58 @@ def _most_vivid_lightness(hue_degrees: float, *, steps: int = 16) -> tuple[float
     return best_lightness, best_chroma
 
 
-def _value_palette(values: Sequence[int]) -> dict[int, tuple[float, float, float]]:
-    """A refined, evenly-hued qualitative palette keyed by observed value.
+def _color_for_hue(hue_degrees: float) -> tuple[float, float, float]:
+    lightness, chroma_max = _most_vivid_lightness(hue_degrees)
+    return _oklch_to_srgb(lightness, min(_PALETTE_TARGET_CHROMA, chroma_max), hue_degrees)
 
-    Hues are spaced evenly by angle rather than by perceptual distance: an
-    equal-Lab-distance spacing sounds more rigorous, but blue and purple can
-    reach much higher chroma than yellow or orange within sRGB, so it in
-    practice claims a disproportionate share of hues for the blue family and
-    crowds out warm colors. Plain angular spacing keeps every hue family
-    represented, which reads as more diverse even though adjacent hues are
-    not perfectly equalized for distance.
+
+def _hue_farthest_from(hues: Sequence[float]) -> float:
+    """The hue that maximizes the minimum angular distance to every hue given.
+
+    Used to slot in a color for a value that never survives to the final
+    state: it lands in whichever gap between already-assigned hues is
+    largest, staying as distinguishable as possible from the colors that
+    matter most rather than just taking the next unclaimed angle.
     """
 
-    count = len(values)
-    if count > _PALETTE_MAX_VALUES:
-        raise ValueError(f"palette supports at most {_PALETTE_MAX_VALUES} distinct values, got {count}")
-    colors = []
-    for index in range(count):
-        hue = (_PALETTE_HUE_OFFSET + 360.0 * index / count) % 360 if count else 0.0
-        lightness, chroma_max = _most_vivid_lightness(hue)
-        colors.append(_oklch_to_srgb(lightness, min(_PALETTE_TARGET_CHROMA, chroma_max), hue))
-    return dict(zip(values, colors, strict=False))
+    if not hues:
+        return _PALETTE_HUE_OFFSET
+    ordered = sorted(hue % 360 for hue in hues)
+    best_hue, best_gap = ordered[0], -1.0
+    for index, hue in enumerate(ordered):
+        next_hue = ordered[(index + 1) % len(ordered)]
+        gap = (next_hue - hue) % 360 or 360.0
+        if gap > best_gap:
+            best_gap, best_hue = gap, (hue + gap / 2) % 360
+    return best_hue
+
+
+def _value_palette(
+    final_values: Sequence[int], other_values: Sequence[int] = ()
+) -> dict[int, tuple[float, float, float]]:
+    """A refined, evenly-hued qualitative palette, prioritizing final-state values.
+
+    ``final_values`` are spaced maximally apart first (evenly by angle,
+    since blue and purple reach much higher sRGB chroma than yellow or
+    orange, so an equal-Lab-distance spacing would in practice claim a
+    disproportionate share of hues for the blue family). Every ``other_value``
+    that appears only transiently mid-trace is then dropped into whichever
+    gap between already-claimed hues is largest, so two final values (say 6
+    and 7) never end up looking similar just because a value nobody
+    ultimately reads shares the palette.
+    """
+
+    total = len(final_values) + len(other_values)
+    if total > _PALETTE_MAX_VALUES:
+        raise ValueError(f"palette supports at most {_PALETTE_MAX_VALUES} distinct values, got {total}")
+    hues: list[float] = [
+        (_PALETTE_HUE_OFFSET + 360.0 * index / len(final_values)) % 360
+        for index in range(len(final_values))
+    ]
+    for _ in other_values:
+        hues.append(_hue_farthest_from(hues))
+    colors = [_color_for_hue(hue) for hue in hues]
+    return dict(zip((*final_values, *other_values), colors, strict=True))
 
 
 def _time_ticks(max_step: int, target: int = 10) -> list[int]:
@@ -402,11 +433,13 @@ def render_braid(
     state, operations = initial_state(record)
     labels = variable_labels(int(record["num_variables"]), record.get("temporary_variable"))
     temporary_row = record.get("temporary_variable")
+    final_values = sorted({int(value) for value in record["final_state"]})
     observed_values = sorted(
         set(state)
         | {int(operation["value"]) for operation in operations if operation["op"] == "constant"}
     )
-    colors = _value_palette(observed_values)
+    other_values = [value for value in observed_values if value not in set(final_values)]
+    colors = _value_palette(final_values, other_values)
 
     sns.set_theme(style="white", context="paper")
     # Pin DejaVu Sans everywhere; register names use DejaVu Sans Mono below.
