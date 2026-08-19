@@ -27,9 +27,10 @@ generation:
   query_mode: all
   require_strict_witness: true
   distinct_initial_values: false
-  # Periodic traces mostly extend deep copy provenance chains; occasional
-  # constants retain multiple value lineages and reset selected chains.
-  periodic_constant_probability: 0.1
+  # Periodic traces mostly extend deep copy provenance chains; a log-uniformly
+  # sampled count of constant resets sweeps sensitivity coverage across its
+  # full range independently of trace length.
+  aperiodic_constants: {min: 1, max: 64}
   conditions:
     # Padding is scheduled on short sources, then shared by all three derived
     # complexity classes and every selected formatter.

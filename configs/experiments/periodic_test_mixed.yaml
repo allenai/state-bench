@@ -1,9 +1,9 @@
 schema_version: 1
 
 dataset:
-  name: periodic-test-mixed-20pct
+  name: periodic-test-mixed
   seed: 23
-  output_dir: ../../data/periodic-test-mixed-20pct
+  output_dir: ../../data/periodic-test-mixed
 
 splits:
   test:
@@ -14,9 +14,10 @@ generation:
   query_mode: all
   require_strict_witness: true
   distinct_initial_values: false
-  # About 20% of extra assignments are value resets. They are placed early and
-  # favor real variables with many later TMP-based swaps.
-  periodic_constant_probability: 0.2
+  # Each trace mixes in a log-uniformly sampled count of value resets. Coverage
+  # is governed by the count alone (~1.0 at 1 reset down to the ~0.2 floor by
+  # 64), so this sweeps sensitivity coverage uniformly in every length bucket.
+  aperiodic_constants: {min: 1, max: 64}
   conditions:
     - complexity: periodic
       splits: [test]

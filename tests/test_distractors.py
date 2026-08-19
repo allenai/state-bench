@@ -130,7 +130,8 @@ def test_tmp_is_fixed_in_alternatives_for_every_derived_complexity() -> None:
         num_values=10,
         min_extra_assignments=64,
         max_extra_assignments=64,
-        periodic_constant_probability=0.1,
+        min_aperiodic_constants=6,
+        max_aperiodic_constants=6,
         rng=random.Random(23),
     )
     for instance in derive_variants(source):

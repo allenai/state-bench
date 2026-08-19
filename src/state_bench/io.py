@@ -132,7 +132,8 @@ class _GenerationTask:
     query_mode: QueryMode
     distinct_initial_values: bool
     require_strict_witness: bool
-    periodic_constant_probability: float
+    min_aperiodic_constants: int
+    max_aperiodic_constants: int
     root_seed: int
     excluded_semantics: frozenset[str]
     plan_item: AssignmentPlanItem
@@ -242,7 +243,8 @@ def _generate_instances(
             query_mode=task.query_mode,
             distinct_initial_values=task.distinct_initial_values,
             require_strict_witness=task.require_strict_witness,
-            periodic_constant_probability=task.periodic_constant_probability,
+            min_aperiodic_constants=task.min_aperiodic_constants,
+            max_aperiodic_constants=task.max_aperiodic_constants,
             rng=random.Random(retry_seed),
         )
         instances = derive_variants(source)
@@ -718,7 +720,8 @@ def build_dataset(
                             query_mode=spec.generation.query_mode,
                             distinct_initial_values=spec.generation.distinct_initial_values,
                             require_strict_witness=spec.generation.require_strict_witness,
-                            periodic_constant_probability=spec.generation.periodic_constant_probability,
+                            min_aperiodic_constants=spec.generation.aperiodic_constants.min,
+                            max_aperiodic_constants=spec.generation.aperiodic_constants.max,
                             root_seed=spec.dataset.seed,
                             excluded_semantics=frozen_excluded_semantics,
                             plan_item=plan_item,

@@ -15,7 +15,7 @@ generation:
   query_mode: all
   require_strict_witness: true
   distinct_initial_values: false
-  periodic_constant_probability: 0.0
+  aperiodic_constants: {min: 0, max: 0}
   conditions:
     - complexity: periodic
       splits: [test]
