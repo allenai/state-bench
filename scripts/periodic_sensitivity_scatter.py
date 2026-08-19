@@ -85,6 +85,7 @@ def main(argv: Sequence[str] | None = None) -> None:
         ylabel="Sensitivity coverage",
         ylim=(-0.02, 1.02),
     )
+    axis.xaxis.set_major_formatter(aes.COMPACT_NUMBER_FORMATTER)
     legend = axis.legend(
         title="Aperiodic mix",
         loc="lower right",
