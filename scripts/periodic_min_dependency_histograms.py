@@ -9,6 +9,7 @@ import re
 from collections.abc import Sequence
 from pathlib import Path
 
+import aesthetics as aes
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
@@ -28,7 +29,7 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         nargs="+",
         help="Optional labels, in the same order as the canonical JSONL inputs.",
     )
-    parser.add_argument("--output", type=Path, required=True, help="Destination PNG path.")
+    parser.add_argument("--output", type=Path, required=True, help="Destination path stem or file.")
     return parser.parse_args(argv)
 
 
@@ -81,15 +82,14 @@ def main(argv: Sequence[str] | None = None) -> None:
     max_depth = int(frame["Minimum dependency length"].max())
     bins = np.arange(-0.5, int(np.ceil(np.log2(max_depth + 1))) + 1.5, 1)
 
-    sns.set_theme(style="whitegrid", context="talk")
     palette = dict(zip(labels, sns.color_palette("deep", n_colors=len(labels)), strict=True))
-    figure, axis = plt.subplots(figsize=(12, 6))
+    figure, axis = plt.subplots(figsize=(aes.PAPER_WIDTH_IN, aes.FIG_HEIGHT_DOUBLE_ROW_IN))
     for label in labels:
         sns.histplot(
             data=frame[frame["Aperiodic mix"] == label],
             x="Log minimum dependency length",
             bins=bins,
-            stat="count",
+            stat="proportion",
             element="bars",
             fill=True,
             alpha=0.4,
@@ -100,15 +100,15 @@ def main(argv: Sequence[str] | None = None) -> None:
     ticks = np.arange(0, len(bins) - 1)
     axis.set_xticks(ticks, ["0" if tick == 0 else f"{2**tick - 1:,}" for tick in ticks])
     axis.set(
-        title="Minimum queried dependency length by aperiodic mixture",
-        xlabel="Minimum dependency length per periodic sequence (log2-binned)",
-        ylabel="Periodic sequences",
+        xlabel="Minimum queried dependency length (log2-binned)",
+        ylabel="Proportion of periodic sequences",
     )
     axis.tick_params(axis="x", labelrotation=45)
-    axis.legend(title="Aperiodic mix")
-    figure.tight_layout()
-    args.output.parent.mkdir(parents=True, exist_ok=True)
-    figure.savefig(args.output, dpi=180, bbox_inches="tight")
+    axis.legend(title="Aperiodic mix", frameon=False)
+    sns.despine(fig=figure)
+    figure.subplots_adjust(top=0.82)
+    aes.set_figure_title(figure, "Minimum queried dependency length by aperiodic mixture")
+    aes.save_figure(args.output, fig=figure, save_png=True)
     plt.close(figure)
 
 
