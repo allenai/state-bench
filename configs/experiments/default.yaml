@@ -37,7 +37,7 @@ generation:
     - complexity: periodic
       splits: [test]
       num_variables: [2, 4, 8, 16]
-      num_values: 10
+      num_values: 100
       extra_assignments: {min: 32, max: 32}
       # The fixed condition budget is spread across the zero-padding baseline
       # and every nonzero proportion/distraction combination.
@@ -50,7 +50,7 @@ generation:
     - complexity: periodic
       splits: [test]
       num_variables: [2, 4, 8, 16]
-      num_values: 10
+      num_values: 100
       extra_assignments:
         distribution: log-spaced
         min: 32
@@ -68,7 +68,7 @@ generation:
       splits: [train]
       formatters: [integer-code]
       num_variables: [2, 4, 8, 16]
-      num_values: 10
+      num_values: 100
       extra_assignments:
         distribution: log-spaced
         # The minimum leaves room for several complete TMP-based swaps.
@@ -88,7 +88,7 @@ generation:
       splits: [test]
       formatters: [integer-code]
       num_variables: [2, 4, 8, 16]
-      num_values: 10
+      num_values: 100
       extra_assignments:
         distribution: log-spaced
         min: 32

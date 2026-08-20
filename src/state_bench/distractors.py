@@ -17,13 +17,14 @@ def generate_incorrect_states(
     num_distractors: int,
     rng: random.Random,
 ) -> tuple[tuple[int, ...], ...]:
-    """Return unique wrong states with the correct answer's equality pattern.
+    """Return unique wrong states that a value-bag heuristic cannot reject.
 
-    Distractors preserve the correct answer's equality pattern, except that
-    periodic distractors preserve its value multiplicities rather than the
-    locations of equal values. They additionally use only correct-answer
-    values and match its agreement with each variable's initial literal and a
-    one-hop reading of each final copy source.
+    Periodic distractors preserve the correct answer's value multiplicities and
+    match its agreement with each variable's initial literal and a one-hop
+    reading of each final copy source. Non-periodic distractors prefer the same
+    value-preserving rearrangements, then substitutions drawn from constants
+    the trace actually assigns, and fall back to equality-pattern-preserving
+    relabelings only when the answer space is too small for anything better.
     These constraints prevent a multiple-choice solver from choosing an option
     merely because it uses unseen values, resembles the initial state less, or
     follows only the final copy operation. When a scratch register is present,
@@ -115,11 +116,28 @@ def generate_incorrect_states(
                 rng=rng,
             )
         )
+    if not periodic:
+        _add_multiset_rearrangements(
+            wrong_answers,
+            correct_answer=correct_answer,
+            movable_positions=movable_positions,
+            movable_answer=movable_answer,
+            count=min(target_count, periodic_available),
+            rng=rng,
+        )
+        _add_seen_value_substitutions(
+            wrong_answers,
+            instance=instance,
+            correct_answer=correct_answer,
+            movable_positions=movable_positions,
+            count=target_count,
+            rng=rng,
+        )
     attempts = 0
     while len(wrong_answers) < target_count:
         attempts += 1
         if attempts > 100_000:
-            raise ValueError("could not generate enough leakage-matched periodic distractors")
+            raise ValueError("could not generate enough equality-pattern-preserving distractors")
         replacement_values = rng.sample(range(instance.num_values), len(distinct_values))
         replacements = dict(zip(distinct_values, replacement_values, strict=True))
         candidate = tuple(replacements[value] for value in correct_answer)
@@ -140,6 +158,64 @@ def generate_incorrect_states(
         states.append(tuple(state))
     rng.shuffle(states)
     return tuple(states)
+
+
+def _add_multiset_rearrangements(
+    wrong_answers: set[tuple[int, ...]],
+    *,
+    correct_answer: tuple[int, ...],
+    movable_positions: tuple[int, ...],
+    movable_answer: tuple[int, ...],
+    count: int,
+    rng: random.Random,
+) -> None:
+    """Add wrong answers that reuse exactly the correct answer's values."""
+
+    attempts = 0
+    while len(wrong_answers) < count and attempts < 10_000:
+        attempts += 1
+        shuffled = list(movable_answer)
+        rng.shuffle(shuffled)
+        candidate = list(correct_answer)
+        for position, value in zip(movable_positions, shuffled, strict=True):
+            candidate[position] = value
+        candidate_tuple = tuple(candidate)
+        if candidate_tuple != correct_answer:
+            wrong_answers.add(candidate_tuple)
+
+
+def _add_seen_value_substitutions(
+    wrong_answers: set[tuple[int, ...]],
+    *,
+    instance: StateTrackingInstance,
+    correct_answer: tuple[int, ...],
+    movable_positions: tuple[int, ...],
+    count: int,
+    rng: random.Random,
+) -> None:
+    """Add wrong answers whose values all appear as constants in the trace."""
+
+    seen_values = sorted({
+        operation.value
+        for operation in instance.operations
+        if isinstance(operation, AssignConstant)
+    })
+    if not seen_values or not movable_positions:
+        return
+    attempts = 0
+    while len(wrong_answers) < count and attempts < 10_000:
+        attempts += 1
+        candidate = list(correct_answer)
+        size = min(len(movable_positions), rng.randint(1, 2))
+        changed = False
+        for position in rng.sample(movable_positions, size):
+            alternatives = [value for value in seen_values if value != correct_answer[position]]
+            if alternatives:
+                candidate[position] = rng.choice(alternatives)
+                changed = True
+        candidate_tuple = tuple(candidate)
+        if changed and candidate_tuple != correct_answer:
+            wrong_answers.add(candidate_tuple)
 
 
 def _multiset_permutations(values: tuple[int, ...]) -> int:

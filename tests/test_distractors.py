@@ -31,7 +31,7 @@ def test_generates_four_unique_incorrect_states_for_single_variable_query() -> N
     assert all(state != (0,) for state in states)
 
 
-def test_distractors_preserve_the_correct_answers_equality_pattern() -> None:
+def test_non_periodic_distractors_prefer_rearrangements_then_seen_values() -> None:
     instance = StateTrackingInstance.create(
         complexity=Complexity.R_TRIVIAL,
         num_variables=4,
@@ -44,8 +44,36 @@ def test_distractors_preserve_the_correct_answers_equality_pattern() -> None:
         final_state=(0, 0, 2, 0),
     )
     states = generate_incorrect_states(instance, num_distractors=4, rng=random.Random(7))
-    correct_pattern = _equality_pattern(instance.final_state)
-    assert all(_equality_pattern(state) == correct_pattern for state in states)
+    correct_counter = Counter(instance.final_state)
+    rearranged = sum(Counter(state) == correct_counter for state in states)
+    # (0, 0, 2, 0) admits exactly three rearrangements; the fourth distractor
+    # must fall back to substituting values the trace actually assigns.
+    assert rearranged == 3
+    assert all(set(state) <= {0, 2} for state in states)
+
+
+def test_aperiodic_distractors_are_not_identifiable_by_value_multiset() -> None:
+    source = generate_instance(
+        complexity=Complexity.PERIODIC,
+        num_variables=8,
+        num_values=100,
+        min_extra_assignments=64,
+        max_extra_assignments=64,
+        min_aperiodic_constants=4,
+        max_aperiodic_constants=4,
+        rng=random.Random(51),
+    )
+    for instance in derive_variants(source):
+        if instance.complexity is Complexity.PERIODIC:
+            continue
+        states = generate_incorrect_states(instance, num_distractors=4, rng=random.Random(53))
+        correct_counter = Counter(
+            instance.final_state[variable] for variable in instance.query
+        )
+        assert all(
+            Counter(state[variable] for variable in instance.query) == correct_counter
+            for state in states
+        )
 
 
 def test_rejects_more_distractors_than_the_answer_space_supports() -> None:
@@ -145,8 +173,3 @@ def test_tmp_is_fixed_in_alternatives_for_every_derived_complexity() -> None:
             state[instance.temporary_variable] == instance.final_state[instance.temporary_variable]
             for state in states
         )
-
-
-def _equality_pattern(values: tuple[int, ...]) -> tuple[int, ...]:
-    labels: dict[int, int] = {}
-    return tuple(labels.setdefault(value, len(labels)) for value in values)

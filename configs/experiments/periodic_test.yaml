@@ -21,7 +21,7 @@ generation:
       splits: [test]
       formatters: [integer-code]
       num_variables: [2, 4, 8, 16]
-      num_values: 10
+      num_values: 100
       extra_assignments:
         distribution: log-spaced
         min: 64
