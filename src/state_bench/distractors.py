@@ -28,9 +28,11 @@ def generate_incorrect_states(
     These constraints prevent a multiple-choice solver from choosing an option
     merely because it uses unseen values, resembles the initial state less, or
     follows only the final copy operation. When a scratch register is present,
-    its answer coordinate is fixed to the correct value in every alternative;
-    periodic traces therefore return at most the number of unique real-variable
-    permutations (one alternative for the two-variable case).
+    its answer coordinate is fixed to the correct value in every alternative.
+    Every complexity family fills the same way - value-preserving
+    rearrangements first, then trace-seen substitutions - so all families
+    return the full ``num_distractors`` (the two-variable case pairs its single
+    non-identity permutation with substitution-based alternatives).
     """
 
     if num_distractors < 0:
@@ -48,13 +50,12 @@ def generate_incorrect_states(
     periodic = instance.complexity is Complexity.PERIODIC
     movable_answer = tuple(correct_answer[index] for index in movable_positions)
     periodic_available = max(0, _multiset_permutations(movable_answer) - 1)
-    target_count = min(num_distractors, periodic_available) if periodic else num_distractors
-    cue_matched_periodic = periodic and target_count > 0
-    available = (
-        periodic_available
-        if cue_matched_periodic
-        else perm(instance.num_values, len(distinct_values)) - 1
-    )
+    target_count = num_distractors
+    rearrangement_target = min(num_distractors, periodic_available)
+    cue_matched_periodic = periodic and rearrangement_target > 0
+    available = perm(instance.num_values, len(distinct_values)) - 1
+    if periodic:
+        available += periodic_available
     if target_count > available:
         raise ValueError(
             f"requested {target_count} distractors, but only {available} equality-pattern-"
@@ -90,7 +91,7 @@ def generate_incorrect_states(
             movable_positions=movable_positions,
         )
         attempts = 0
-        while len(wrong_answers) < target_count:
+        while len(wrong_answers) < rearrangement_target:
             attempts += 1
             if attempts > 100_000:
                 raise ValueError("could not generate enough TMP-fixed periodic permutations")
@@ -112,7 +113,7 @@ def generate_incorrect_states(
                 wrong_answers,
                 correct_answer=correct_answer,
                 queried_depths=queried_depths,
-                count=target_count,
+                count=rearrangement_target,
                 rng=rng,
             )
         )
@@ -122,17 +123,17 @@ def generate_incorrect_states(
             correct_answer=correct_answer,
             movable_positions=movable_positions,
             movable_answer=movable_answer,
-            count=min(target_count, periodic_available),
+            count=rearrangement_target,
             rng=rng,
         )
-        _add_seen_value_substitutions(
-            wrong_answers,
-            instance=instance,
-            correct_answer=correct_answer,
-            movable_positions=movable_positions,
-            count=target_count,
-            rng=rng,
-        )
+    _add_seen_value_substitutions(
+        wrong_answers,
+        instance=instance,
+        correct_answer=correct_answer,
+        movable_positions=movable_positions,
+        count=target_count,
+        rng=rng,
+    )
     attempts = 0
     while len(wrong_answers) < target_count:
         attempts += 1

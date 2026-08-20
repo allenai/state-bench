@@ -52,6 +52,37 @@ def test_non_periodic_distractors_prefer_rearrangements_then_seen_values() -> No
     assert all(set(state) <= {0, 2} for state in states)
 
 
+def test_two_variable_periodic_traces_still_fill_every_distractor_slot() -> None:
+    instance = generate_instance(
+        complexity=Complexity.PERIODIC,
+        num_variables=2,
+        num_values=100,
+        min_extra_assignments=64,
+        max_extra_assignments=64,
+        min_aperiodic_constants=0,
+        max_aperiodic_constants=0,
+        rng=random.Random(61),
+    )
+    states = generate_incorrect_states(instance, num_distractors=4, rng=random.Random(67))
+    assert len(states) == len(set(states)) == 4
+    correct = tuple(instance.final_state[variable] for variable in instance.query)
+    correct_counter = Counter(correct)
+    answers = [tuple(state[variable] for variable in instance.query) for state in states]
+    # Exactly one rearrangement of the correct values exists (the swap); the
+    # remaining alternatives substitute values the trace actually assigns.
+    assert sum(Counter(answer) == correct_counter for answer in answers) == 1
+    seen = {
+        operation.value
+        for operation in instance.operations
+        if isinstance(operation, AssignConstant)
+    }
+    assert all(set(answer) <= seen for answer in answers)
+    assert all(
+        state[instance.temporary_variable] == instance.final_state[instance.temporary_variable]
+        for state in states
+    )
+
+
 def test_aperiodic_distractors_are_not_identifiable_by_value_multiset() -> None:
     source = generate_instance(
         complexity=Complexity.PERIODIC,
