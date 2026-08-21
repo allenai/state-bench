@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 import random
 from collections import Counter
 
@@ -25,7 +26,8 @@ def generate_instance(
     query_mode: QueryMode = QueryMode.ALL,
     distinct_initial_values: bool = False,
     require_strict_witness: bool = True,
-    periodic_constant_probability: float = 0.1,
+    min_aperiodic_constants: int = 1,
+    max_aperiodic_constants: int = 64,
     rng: random.Random,
 ) -> StateTrackingInstance:
     """Generate a periodic source trace and return the requested derivation."""
@@ -38,7 +40,8 @@ def generate_instance(
         query_mode=query_mode,
         distinct_initial_values=distinct_initial_values,
         require_strict_witness=require_strict_witness,
-        periodic_constant_probability=periodic_constant_probability,
+        min_aperiodic_constants=min_aperiodic_constants,
+        max_aperiodic_constants=max_aperiodic_constants,
         rng=rng,
     )
     return derive_instance(source, complexity=complexity)
@@ -53,7 +56,8 @@ def generate_periodic_source(
     query_mode: QueryMode = QueryMode.ALL,
     distinct_initial_values: bool = False,
     require_strict_witness: bool = True,
-    periodic_constant_probability: float = 0.1,
+    min_aperiodic_constants: int = 1,
+    max_aperiodic_constants: int = 64,
     rng: random.Random,
 ) -> StateTrackingInstance:
     """Generate the periodic source-of-truth for a three-family trace set."""
@@ -65,7 +69,8 @@ def generate_periodic_source(
         max_extra_assignments=max_extra_assignments,
         distinct_initial_values=distinct_initial_values,
         require_strict_witness=require_strict_witness,
-        periodic_constant_probability=periodic_constant_probability,
+        min_aperiodic_constants=min_aperiodic_constants,
+        max_aperiodic_constants=max_aperiodic_constants,
     )
 
     return _generate_swap_periodic_source(
@@ -73,7 +78,8 @@ def generate_periodic_source(
         num_values=num_values,
         min_extra_assignments=min_extra_assignments,
         max_extra_assignments=max_extra_assignments,
-        periodic_constant_probability=periodic_constant_probability,
+        min_aperiodic_constants=min_aperiodic_constants,
+        max_aperiodic_constants=max_aperiodic_constants,
         query_mode=query_mode,
         distinct_initial_values=distinct_initial_values,
         rng=rng,
@@ -201,7 +207,8 @@ def _validate_parameters(
     max_extra_assignments: int,
     distinct_initial_values: bool,
     require_strict_witness: bool,
-    periodic_constant_probability: float,
+    min_aperiodic_constants: int,
+    max_aperiodic_constants: int,
 ) -> None:
     if num_variables < 1 or num_values < 1:
         raise ValueError("num_variables and num_values must be positive")
@@ -209,8 +216,13 @@ def _validate_parameters(
         raise ValueError("extra assignment bounds must satisfy 0 <= min <= max")
     if distinct_initial_values and num_values < num_variables:
         raise ValueError("distinct initial values require num_values >= num_variables")
-    if not 0 <= periodic_constant_probability <= 1:
-        raise ValueError("periodic constant probability must satisfy 0 <= probability <= 1")
+    if min_aperiodic_constants < 0 or max_aperiodic_constants < min_aperiodic_constants:
+        raise ValueError("aperiodic constant bounds must satisfy 0 <= min <= max")
+    if min_aperiodic_constants != max_aperiodic_constants and min_aperiodic_constants < 1:
+        raise ValueError(
+            "aperiodic constant ranges are sampled log-uniformly and must not include zero; "
+            "use min = max = 0 for pure periodic traces"
+        )
     if require_strict_witness:
         if max_extra_assignments < 3:
             raise ValueError("strict swap-periodic instances require room for three extra assignments")
@@ -224,7 +236,8 @@ def _generate_swap_periodic_source(
     num_values: int,
     min_extra_assignments: int,
     max_extra_assignments: int,
-    periodic_constant_probability: float,
+    min_aperiodic_constants: int,
+    max_aperiodic_constants: int,
     query_mode: QueryMode,
     distinct_initial_values: bool,
     rng: random.Random,
@@ -235,10 +248,17 @@ def _generate_swap_periodic_source(
     ``num_variables`` counts only real variables; the scratch register lives at
     the following index. Constant mix-ins target real variables only and are
     placed early enough that balanced later swaps can rebuild their chains.
+    The mix-in count is sampled log-uniformly per instance because sensitivity
+    coverage is governed by the absolute count, independent of trace length.
     """
 
     extra_count = rng.randint(max(3, min_extra_assignments), max_extra_assignments)
-    constant_count = min(round(periodic_constant_probability * extra_count), extra_count - 3)
+    requested_constants = _sample_aperiodic_constant_count(
+        minimum=min_aperiodic_constants,
+        maximum=max_aperiodic_constants,
+        rng=rng,
+    )
+    constant_count = min(requested_constants, extra_count - 3)
     reference_count = extra_count - constant_count
     swap_count = reference_count // 3
     scratch_load_count = reference_count - 3 * swap_count
@@ -334,6 +354,20 @@ def _generate_swap_periodic_source(
         final_state=tuple(state),
         temporary_variable=temporary,
     )
+
+
+def _sample_aperiodic_constant_count(
+    *,
+    minimum: int,
+    maximum: int,
+    rng: random.Random,
+) -> int:
+    """Sample an integer log-uniformly from [minimum, maximum]."""
+
+    if minimum == maximum:
+        return minimum
+    sampled = math.exp(rng.uniform(math.log(minimum), math.log(maximum + 1)))
+    return min(maximum, int(sampled))
 
 
 def _diverse_initial_values(

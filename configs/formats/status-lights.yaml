@@ -4,7 +4,7 @@ name: status-lights
 vocabulary:
   variables: [light A, light B, light C, light D, light E, light F, light G, light H, light I, light J, light K, light L, light M, light N, light O, light P]
   temporary_variable: buffer light
-  values: [red, orange, yellow, green, blue, purple, pink, teal, white, gray]
+  values: [red, orange, yellow, green, blue, purple, pink, teal, brown, gray, maroon, navy, olive, salmon, indigo, violet, magenta, cyan, turquoise, lavender, beige, tan, khaki, coral, crimson, azure, mint, jade, emerald, ruby, amber, gold, silver, bronze, copper, charcoal, slate, ivory, pearl, cream, rose, blush, plum, mauve, lilac, periwinkle, cobalt, sapphire, cerulean, aqua, seafoam, pine, lime, chartreuse, mustard, ochre, sienna, rust, brick, mahogany, chestnut, walnut, sand, taupe, fawn, wheat, honey, apricot, peach, melon, tangerine, vermilion, scarlet, cherry, wine, burgundy, mulberry, orchid, fuchsia, garnet, topaz, citrine, opal, onyx, ebony, jet, smoke, ash, steel, pewter, gunmetal, denim, midnight, frost, snow, eggshell, linen, parchment, sepia, umber]
 
 templates:
   task_description: >-

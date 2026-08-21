@@ -232,7 +232,8 @@ def _generate(
         query_mode=generation.query_mode,
         distinct_initial_values=generation.distinct_initial_values,
         require_strict_witness=generation.require_strict_witness,
-        periodic_constant_probability=generation.periodic_constant_probability,
+        min_aperiodic_constants=generation.aperiodic_constants.min,
+        max_aperiodic_constants=generation.aperiodic_constants.max,
         rng=random.Random(seed),
     )
     return derive_instance(source, complexity=complexity)

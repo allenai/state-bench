@@ -43,7 +43,8 @@ def main() -> None:
             num_values=6,
             min_extra_assignments=4,
             max_extra_assignments=4,
-            periodic_constant_probability=0.0,
+            min_aperiodic_constants=0,
+            max_aperiodic_constants=0,
             rng=random.Random(derive_seed(29, "dashboard-source", str(sample_index))),
         )
         for proportion, distraction in PADDING_VARIANTS:

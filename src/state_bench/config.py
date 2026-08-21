@@ -50,6 +50,30 @@ class LogSpacedAssignmentSchedule(StrictModel):
 type ExtraAssignmentsSpec = AssignmentRange | LogSpacedAssignmentSchedule
 
 
+class AperiodicConstantsSpec(StrictModel):
+    """Absolute count of constant resets mixed into each periodic source trace.
+
+    The count is sampled log-uniformly from [min, max] per instance; sensitivity
+    coverage is governed by this count independently of trace length, so a
+    log-spaced range sweeps coverage across its full achievable span in every
+    length bucket. Use min = max for a fixed count (0 for pure periodic traces).
+    """
+
+    min: int = Field(ge=0)
+    max: int = Field(ge=0)
+
+    @model_validator(mode="after")
+    def ordered(self) -> AperiodicConstantsSpec:
+        if self.max < self.min:
+            raise ValueError("max must be greater than or equal to min")
+        if self.min != self.max and self.min < 1:
+            raise ValueError(
+                "aperiodic constant ranges are sampled log-uniformly and must not include zero; "
+                "use min = max = 0 for pure periodic traces"
+            )
+        return self
+
+
 FillerDistraction = Literal["easy", "medium", "hard"]
 
 
@@ -107,7 +131,7 @@ class GenerationSpec(StrictModel):
     query_mode: QueryMode = QueryMode.ALL
     require_strict_witness: bool = True
     distinct_initial_values: bool = False
-    periodic_constant_probability: float = Field(default=0.1, ge=0.0, le=1.0)
+    aperiodic_constants: AperiodicConstantsSpec = AperiodicConstantsSpec(min=1, max=64)
     conditions: list[ConditionSpec]
 
     @model_validator(mode="after")

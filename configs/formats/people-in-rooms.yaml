@@ -4,7 +4,7 @@ name: people-in-rooms
 vocabulary:
   variables: [Alice, Bob, Carol, David, Elena, Frank, Grace, Henry, Iris, James, Karen, Leo, Maya, Noah, Olivia, Peter]
   temporary_variable: Taylor
-  values: [kitchen, garden, library, office, bedroom, garage, attic, basement, hallway, studio]
+  values: [kitchen, garden, library, office, bedroom, garage, attic, basement, hallway, studio, lounge, pantry, cellar, balcony, porch, foyer, den, nursery, workshop, greenhouse, laundry, closet, bathroom, gym, sauna, solarium, conservatory, parlor, ballroom, chapel, vault, archive, gallery, theater, cinema, arcade, cafeteria, canteen, lobby, atrium, mezzanine, penthouse, suite, dormitory, barracks, infirmary, clinic, pharmacy, laboratory, observatory, planetarium, aquarium, aviary, stable, barn, silo, shed, boathouse, lighthouse, bunker, hangar, depot, warehouse, showroom, salon, bakery, brewery, winery, distillery, forge, foundry, mill, granary, vineyard, apiary, kennel, coop, dairy, smokehouse, icehouse, toolshed, sunroom, mudroom, playroom, guestroom, vestibule, corridor, stairwell, landing, loft, garret, turret, tower, courtyard, terrace, veranda, patio, gazebo, cabana, bungalow]
 
 templates:
   task_description: >-

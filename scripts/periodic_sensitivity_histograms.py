@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Compare periodic-program sensitivity distributions with Seaborn facets."""
+"""Compare periodic-program sensitivity-coverage distributions across mixtures."""
 
 from __future__ import annotations
 
@@ -9,17 +9,10 @@ import re
 from collections.abc import Sequence
 from pathlib import Path
 
+import aesthetics as aes
 import matplotlib.pyplot as plt
 import numpy as np
-import pandas as pd
 import seaborn as sns
-from matplotlib.gridspec import GridSpec
-
-METRICS = {
-    "sensitivity_density": "Sensitivity density",
-    "sensitivity_coverage": "Sensitivity coverage",
-    "mean_live_fanout": "Mean live fanout",
-}
 
 
 def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
@@ -35,28 +28,21 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         nargs="+",
         help="Optional labels, in the same order as the canonical JSONL inputs.",
     )
-    parser.add_argument("--output", type=Path, required=True, help="Destination PNG path.")
+    parser.add_argument("--output", type=Path, required=True, help="Destination path stem or file.")
     return parser.parse_args(argv)
 
 
-def read_periodic_rows(path: Path, *, mixture: str) -> list[dict[str, float | str]]:
-    rows: list[dict[str, float | str]] = []
+def read_coverages(path: Path) -> list[float]:
+    coverages: list[float] = []
     with path.open() as handle:
         for line in handle:
             record = json.loads(line)
             if record["complexity"] != "periodic":
                 continue
-            for field, label in METRICS.items():
-                rows.append(
-                    {
-                        "Aperiodic mix": mixture,
-                        "Sensitivity measure": label,
-                        "Value": float(record[field]),
-                    }
-                )
-    if not rows:
+            coverages.append(float(record["sensitivity_coverage"]))
+    if not coverages:
         raise ValueError(f"no periodic records found in {path}")
-    return rows
+    return coverages
 
 
 def infer_label(path: Path) -> str:
@@ -78,59 +64,33 @@ def main(argv: Sequence[str] | None = None) -> None:
         raise ValueError("--labels must provide exactly one label for each input")
     if len(set(labels)) != len(labels):
         raise ValueError("dataset labels must be unique")
-    frame = pd.DataFrame(
-        [
-            row
-            for path, label in zip(args.inputs, labels, strict=True)
-            for row in read_periodic_rows(path, mixture=label)
-        ]
-    )
-    sns.set_theme(style="whitegrid", context="talk")
-    mixtures = labels
-    palette = dict(zip(mixtures, sns.color_palette("deep", n_colors=len(mixtures)), strict=True))
-    figure = plt.figure(figsize=(15, 5), layout="constrained")
-    grid = GridSpec(1, len(METRICS), figure=figure, wspace=0.1)
-    axes = [figure.add_subplot(grid[0, 0])]
-    axes.extend(
-        figure.add_subplot(grid[0, index], sharey=axes[0])
-        for index in range(1, len(METRICS))
-    )
 
-    for axis, (field, metric) in zip(axes, METRICS.items(), strict=True):
-        facet = frame[frame["Sensitivity measure"] == metric]
-        values = facet["Value"].to_numpy()
-        if field == "sensitivity_coverage":
-            bins = np.linspace(0.0, 1.0, 33)
-        elif np.isclose(values.min(), values.max()):
-            padding = max(0.05, abs(float(values.min())) * 0.05)
-            bins = np.linspace(values.min() - padding, values.max() + padding, 33)
-        else:
-            bins = np.linspace(values.min(), values.max(), 33)
-        for mixture in mixtures:
-            sns.histplot(
-                data=facet[facet["Aperiodic mix"] == mixture],
-                x="Value",
-                bins=bins,
-                stat="count",
-                element="bars",
-                fill=True,
-                alpha=0.4,
-                color=palette[mixture],
-                label=mixture,
-                ax=axis,
-            )
-        axis.set(title=metric, xlabel="Program sensitivity")
-        if field == "sensitivity_coverage":
-            axis.set_xlim(0.0, 1.0)
-            axis.set_xticks(np.linspace(0.0, 1.0, 6))
-    axes[0].set_ylabel("Periodic sequences")
-    for axis in axes[1:]:
-        axis.set_ylabel("")
-        axis.tick_params(axis="y", labelleft=False)
-    axes[0].legend(title="Aperiodic mix")
-    figure.suptitle("Periodic-program sensitivity by aperiodic mixture", y=1.04)
-    args.output.parent.mkdir(parents=True, exist_ok=True)
-    figure.savefig(args.output, dpi=180, bbox_inches="tight")
+    palette = dict(zip(labels, sns.color_palette("deep", n_colors=len(labels)), strict=True))
+    figure, axis = plt.subplots(figsize=(aes.PAPER_WIDTH_IN, aes.FIG_HEIGHT_DOUBLE_ROW_IN))
+    bins = np.linspace(0.0, 1.0, 33)
+    for path, label in zip(args.inputs, labels, strict=True):
+        sns.histplot(
+            x=read_coverages(path),
+            bins=bins,
+            stat="proportion",
+            element="bars",
+            fill=True,
+            alpha=0.4,
+            color=palette[label],
+            label=label,
+            ax=axis,
+        )
+    axis.set(
+        xlabel="Sensitivity coverage",
+        ylabel="Proportion of periodic sequences",
+        xlim=(0.0, 1.0),
+        xticks=np.linspace(0.0, 1.0, 6),
+    )
+    axis.legend(title="Aperiodic mix", frameon=False)
+    sns.despine(fig=figure)
+    figure.subplots_adjust(top=0.82)
+    aes.set_figure_title(figure, "Periodic-program sensitivity coverage by aperiodic mixture")
+    aes.save_figure(args.output, fig=figure, save_png=True)
     plt.close(figure)
 
 

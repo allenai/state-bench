@@ -15,13 +15,13 @@ generation:
   query_mode: all
   require_strict_witness: true
   distinct_initial_values: false
-  periodic_constant_probability: 0.0
+  aperiodic_constants: {min: 0, max: 0}
   conditions:
     - complexity: periodic
       splits: [test]
       formatters: [integer-code]
       num_variables: [2, 4, 8, 16]
-      num_values: 10
+      num_values: 100
       extra_assignments:
         distribution: log-spaced
         min: 64

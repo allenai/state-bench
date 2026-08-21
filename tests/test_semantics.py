@@ -220,7 +220,8 @@ def test_periodic_generation_can_build_deep_dependency_chains() -> None:
         num_values=5,
         min_extra_assignments=100,
         max_extra_assignments=100,
-        periodic_constant_probability=0.0,
+        min_aperiodic_constants=0,
+        max_aperiodic_constants=0,
         rng=random.Random(3),
     )
     lengths = dependency_lengths(
@@ -239,7 +240,8 @@ def test_periodic_generation_uses_value_changing_updates_and_live_lineages() -> 
         num_values=10,
         min_extra_assignments=1000,
         max_extra_assignments=1000,
-        periodic_constant_probability=0.1,
+        min_aperiodic_constants=100,
+        max_aperiodic_constants=100,
         rng=random.Random(3),
     )
     initial_state = evaluate(
@@ -278,7 +280,8 @@ def test_swap_periodic_generation_uses_one_extra_tmp_register(
         num_values=10,
         min_extra_assignments=96,
         max_extra_assignments=96,
-        periodic_constant_probability=0.0,
+        min_aperiodic_constants=0,
+        max_aperiodic_constants=0,
         rng=random.Random(37),
     )
     assert periodic.num_variables == num_variables
@@ -302,14 +305,15 @@ def test_swap_periodic_generation_uses_one_extra_tmp_register(
         assert restore.source == periodic.temporary_variable
 
 
-def test_swap_periodic_generation_can_mix_exactly_twenty_percent_constants() -> None:
+def test_swap_periodic_generation_mixes_exactly_the_requested_constant_count() -> None:
     periodic = generate_instance(
         complexity=Complexity.PERIODIC,
         num_variables=8,
         num_values=10,
         min_extra_assignments=80,
         max_extra_assignments=80,
-        periodic_constant_probability=0.2,
+        min_aperiodic_constants=16,
+        max_aperiodic_constants=16,
         rng=random.Random(41),
     )
 
@@ -330,7 +334,8 @@ def test_two_real_variables_swap_without_collapsing_the_value_pool() -> None:
         num_values=10,
         min_extra_assignments=100,
         max_extra_assignments=100,
-        periodic_constant_probability=0.0,
+        min_aperiodic_constants=0,
+        max_aperiodic_constants=0,
         rng=random.Random(3),
     )
     assert len(set(periodic.final_state[:2])) == 2

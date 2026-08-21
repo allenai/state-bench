@@ -163,12 +163,13 @@ def test_build_preserves_ids_across_formatters(tmp_path: Path) -> None:
         assert rendered_row["sensitivity_coverage"] == canonical_row["sensitivity_coverage"]
         assert rendered_row["mean_live_fanout"] == canonical_row["mean_live_fanout"]
     for row in (*integer, *cubes):
-        # Two real variables have exactly one non-identity permutation once
-        # TMP is held fixed.
-        assert len(row["incorrect_completions"]) == 1
-        assert len(set(row["incorrect_completions"])) == 1
+        # Two real variables have one non-identity permutation once TMP is held
+        # fixed; substitutions of trace-seen values fill the remaining slots so
+        # every complexity family presents the same number of choices.
+        assert len(row["incorrect_completions"]) == 4
+        assert len(set(row["incorrect_completions"])) == 4
         assert row["completion"] not in row["incorrect_completions"]
-        assert len(row["choices"]) == 2
+        assert len(row["choices"]) == 5
         assert row["choices"][row["correct_choice_index"]] == row["completion"]
     source_groups = {}
     for row in canonical:
