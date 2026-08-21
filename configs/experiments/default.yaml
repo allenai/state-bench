@@ -10,7 +10,7 @@ splits:
     # This is a fixed budget for each complexity/variable-count pair. It is
     # distributed across the log-spaced buckets below rather than repeated at
     # every depth. Uniform log-bucket weights provide comparable coverage from
-    # short traces through the roughly one-million-token tail. The 12 target
+    # short traces through the roughly one-million-token tail. The 14 target
     # assignment buckets each receive at least 20 periodic source rows. Every
     # source row produces periodic, aperiodic, and r-trivial rows.
     samples_per_condition: 340
@@ -53,7 +53,7 @@ generation:
       num_values: 100
       extra_assignments:
         distribution: log-spaced
-        min: 32
+        min: 8
         # RULER is the most token-dense formatter at about 15.2 tokens per
         # assignment; 64k assignments therefore stays just below 1m tokens.
         max: 64000
@@ -71,8 +71,8 @@ generation:
       num_values: 100
       extra_assignments:
         distribution: log-spaced
-        # The minimum leaves room for several complete TMP-based swaps.
-        min: 32
+        # A floor of 8 still fits at least one complete TMP-based swap.
+        min: 8
         max: 256
         growth_factor: 2.0
         sample_decay: 1.0
@@ -91,7 +91,7 @@ generation:
       num_values: 100
       extra_assignments:
         distribution: log-spaced
-        min: 32
+        min: 8
         max: 64000
         growth_factor: 2.0
         sample_decay: 1.0
