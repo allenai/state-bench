@@ -57,6 +57,13 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Write Dolma-formatted documents but do not download a tokenizer or run Dolma.",
     )
+    parser.add_argument(
+        "--only-splits",
+        help=(
+            "Comma-separated split stems to tokenize (e.g. 'train'). "
+            "By default, every JSONL file under the dataset is tokenized."
+        ),
+    )
     return parser.parse_args()
 
 
@@ -126,9 +133,11 @@ def prepare_document(
                 raise ValueError(f"{source}:{line_number}: {error}") from error
             # Native state-bench rows already satisfy Dolma's id/text/source
             # schema, so retain their bytes rather than rewriting JSONL.
-            encoded_document = line if fields is None and document is record else (
-                json.dumps(document, ensure_ascii=False, separators=(",", ":")) + "\n"
-            ).encode()
+            encoded_document = (
+                line
+                if fields is None and document is record
+                else (json.dumps(document, ensure_ascii=False, separators=(",", ":")) + "\n").encode()
+            )
             if output_file is None or (chunk_bytes and chunk_bytes + len(encoded_document) > chunk_size):
                 open_chunk()
             output_file.write(encoded_document)
@@ -186,6 +195,15 @@ def main() -> int:
         (path for path in dataset.rglob("*.jsonl") if path.is_file()),
         key=lambda path: split_sort_key(dataset, path),
     )
+    if args.only_splits is not None:
+        wanted_splits = {stem.strip() for stem in args.only_splits.split(",") if stem.strip()}
+        if not wanted_splits:
+            raise SystemExit("--only-splits must name at least one split")
+        source_files = [path for path in source_files if path.stem in wanted_splits]
+        if not source_files:
+            raise SystemExit(
+                f"no JSONL files for split(s) {', '.join(sorted(wanted_splits))} under {dataset}"
+            )
     if not source_files:
         raise SystemExit(f"no JSONL files found under {dataset}")
     destination.mkdir(parents=True)
