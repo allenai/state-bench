@@ -117,16 +117,16 @@ def test_default_experiment_config_loads() -> None:
     assert long.extra_assignments.jitter_fraction == 0.0
     assert long.extra_assignments.min_samples_per_bucket == 20
     buckets = log_spaced_buckets(long.extra_assignments)
-    assert len(buckets) == 12
+    assert len(buckets) == 14
     bucket_counts = allocate_bucket_counts(long.extra_assignments, total_samples=340)
     assert sum(bucket_counts.values()) == 340
     assert min(bucket_counts.values()) >= 20
-    # The train sweep is a log-spaced 32..256 integer-code condition.
+    # The train sweep is a log-spaced 8..256 integer-code condition.
     assert training.splits == ["train"]
     assert training.formatters == ["integer-code"]
     assert training.num_variables == [2, 4, 8, 16]
     assert isinstance(training.extra_assignments, LogSpacedAssignmentSchedule)
-    assert training.extra_assignments.min == 32
+    assert training.extra_assignments.min == 8
     assert training.extra_assignments.max == 256
     assert training.filler.proportions == [0.0, 0.25]
     assert training.filler.distraction_levels == ["easy"]
