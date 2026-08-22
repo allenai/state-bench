@@ -27,9 +27,11 @@ PERIODIC_CONFIG="${PERIODIC_CONFIG:-integer-code--periodic}"
 SKIP_TEST=0
 SKIP_TOKENIZE=0
 
+TOKENIZE_ONLY=0
+
 usage() {
     cat <<'EOF'
-Usage: bash scripts/build_train.sh [--skip-test] [--skip-tokenize] [--config PATH]
+Usage: bash scripts/build_train.sh [--skip-test] [--skip-tokenize] [--tokenize-only] [--config PATH]
 
 Build the `test` split (for its persisted semantic IDs), build the `train`
 split, partition the periodic train split into sensitivity buckets, and
@@ -40,6 +42,10 @@ Options:
                     persisted in the output directory from a prior build.
   --skip-tokenize   Stop after the sensitivity partition; leave tokenization
                     for a separate run (e.g. on a high-CPU machine).
+  --tokenize-only   Skip the builds and the sensitivity partition and run just
+                    the tokenization steps, reusing the existing rendered/ and
+                    rendered-sensitivity/ trees. Use to resume after a
+                    tokenization failure.
   --config PATH     Experiment YAML (default: configs/experiments/default.yaml,
                     or the CONFIG environment variable).
   -h, --help        Show this help.
@@ -60,6 +66,7 @@ while [[ $# -gt 0 ]]; do
     case "$1" in
         --skip-test) SKIP_TEST=1; shift ;;
         --skip-tokenize) SKIP_TOKENIZE=1; shift ;;
+        --tokenize-only) TOKENIZE_ONLY=1; shift ;;
         --config) CONFIG="$2"; shift 2 ;;
         -h|--help) usage; exit 0 ;;
         *) echo "Unknown argument: $1" >&2; usage >&2; exit 1 ;;
@@ -76,6 +83,21 @@ print((Path(sys.argv[1]).resolve().parent / loaded.spec.dataset.output_dir).reso
 " "$CONFIG")"
 echo ">> Dataset root: $DATASET_ROOT"
 
+if [[ "$TOKENIZE_ONLY" -eq 1 && "$SKIP_TOKENIZE" -eq 1 ]]; then
+    echo "--tokenize-only and --skip-tokenize are mutually exclusive" >&2
+    exit 1
+fi
+
+SENS_DIR="$DATASET_ROOT/rendered-sensitivity"
+
+if [[ "$TOKENIZE_ONLY" -eq 1 ]]; then
+    echo ">> Skipping builds and partition (--tokenize-only); reusing rendered/ and rendered-sensitivity/"
+    if [[ ! -d "$SENS_DIR" ]]; then
+        echo "missing $SENS_DIR; run without --tokenize-only first" >&2
+        exit 1
+    fi
+else
+
 if [[ "$SKIP_TEST" -eq 1 ]]; then
     echo ">> Skipping test build; reusing persisted semantics/test.ids"
 else
@@ -87,7 +109,6 @@ echo ">> Building train split from $CONFIG"
 uv run state-bench build "$CONFIG" --splits train
 
 echo ">> Partitioning $PERIODIC_CONFIG train split into $SENS_BUCKETS sensitivity buckets"
-SENS_DIR="$DATASET_ROOT/rendered-sensitivity"
 rm -rf "$SENS_DIR"
 uv run scripts/partition_train_by_sensitivity.py \
     "$DATASET_ROOT/rendered/$PERIODIC_CONFIG/train.jsonl" \
@@ -95,11 +116,11 @@ uv run scripts/partition_train_by_sensitivity.py \
     --buckets "$SENS_BUCKETS" \
     --field "$SENS_FIELD"
 
+fi  # TOKENIZE_ONLY
+
 if [[ "$SKIP_TOKENIZE" -eq 1 ]]; then
     echo ">> Skipping tokenization (--skip-tokenize)"
-    echo ">> Later, tokenize with:"
-    echo "     uv run scripts/tokenize_dataset.py $DATASET_ROOT/rendered --only-splits train"
-    echo "     uv run scripts/tokenize_dataset.py $SENS_DIR"
+    echo ">> Later, resume with: bash scripts/build_train.sh --tokenize-only"
     exit 0
 fi
 
@@ -108,13 +129,13 @@ SENS_TOKENS_DEST="$DATASET_ROOT/rendered-sensitivity-tokenized"
 
 echo ">> Tokenizing train splits into $TOKENS_DEST"
 rm -rf "$TOKENS_DEST"
-uv run scripts/tokenize_dataset.py "$DATASET_ROOT/rendered" \
+uv run --extra tokenization scripts/tokenize_dataset.py "$DATASET_ROOT/rendered" \
     --destination "$TOKENS_DEST" \
     --only-splits train
 
 echo ">> Tokenizing sensitivity buckets into $SENS_TOKENS_DEST"
 rm -rf "$SENS_TOKENS_DEST"
-uv run scripts/tokenize_dataset.py "$SENS_DIR" --destination "$SENS_TOKENS_DEST"
+uv run --extra tokenization scripts/tokenize_dataset.py "$SENS_DIR" --destination "$SENS_TOKENS_DEST"
 
 echo ">> Merging bucket token directories into $TOKENS_DEST/tokens/"
 mv "$SENS_TOKENS_DEST/tokens/"* "$TOKENS_DEST/tokens/"
