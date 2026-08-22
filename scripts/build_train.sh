@@ -127,6 +127,22 @@ fi
 TOKENS_DEST="$DATASET_ROOT/rendered-tokenized"
 SENS_TOKENS_DEST="$DATASET_ROOT/rendered-sensitivity-tokenized"
 
+# Fail fast on tokenization-environment problems (missing extras, or a dolma
+# native extension compiled on a machine with an incompatible glibc) before
+# spending ~half an hour preparing documents.
+echo ">> Checking the tokenization environment"
+if ! uv run --extra tokenization python -c "import huggingface_hub, dolma"; then
+    cat >&2 <<'EOF'
+The tokenization environment is broken. If the error above mentions GLIBC,
+the dolma extension in .venv was compiled on a machine with a newer glibc
+than this one; either rerun on a machine matching `ldd --version`, or force
+a rebuild here with:
+    uv cache clean dolma && uv sync --extra tokenization --reinstall-package dolma
+(building dolma from its git source requires the Rust toolchain: cargo)
+EOF
+    exit 1
+fi
+
 echo ">> Tokenizing train splits into $TOKENS_DEST"
 rm -rf "$TOKENS_DEST"
 uv run --extra tokenization scripts/tokenize_dataset.py "$DATASET_ROOT/rendered" \
