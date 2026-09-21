@@ -7,7 +7,13 @@ from collections import Counter
 from itertools import combinations, permutations
 from math import factorial, log1p, perm
 
-from state_bench.model import AssignConstant, AssignVariable, Complexity, StateTrackingInstance
+from state_bench.model import (
+    AssignConstant,
+    AssignIncrement,
+    AssignVariable,
+    Complexity,
+    StateTrackingInstance,
+)
 from state_bench.semantics import dependency_lengths
 
 
@@ -126,6 +132,15 @@ def generate_incorrect_states(
             count=rearrangement_target,
             rng=rng,
         )
+    if instance.complexity is Complexity.SOLVABLE:
+        _add_increment_offset_substitutions(
+            wrong_answers,
+            instance=instance,
+            correct_answer=correct_answer,
+            movable_positions=movable_positions,
+            count=target_count,
+            rng=rng,
+        )
     _add_seen_value_substitutions(
         wrong_answers,
         instance=instance,
@@ -216,6 +231,38 @@ def _add_seen_value_substitutions(
                 changed = True
         candidate_tuple = tuple(candidate)
         if changed and candidate_tuple != correct_answer:
+            wrong_answers.add(candidate_tuple)
+
+
+def _add_increment_offset_substitutions(
+    wrong_answers: set[tuple[int, ...]],
+    *,
+    instance: StateTrackingInstance,
+    correct_answer: tuple[int, ...],
+    movable_positions: tuple[int, ...],
+    count: int,
+    rng: random.Random,
+) -> None:
+    """Add wrong answers that miss or repeat one of the trace's increments."""
+
+    deltas = sorted({
+        operation.delta
+        for operation in instance.operations
+        if isinstance(operation, AssignIncrement)
+    })
+    if not deltas or not movable_positions:
+        return
+    modulus = instance.num_values
+    attempts = 0
+    while len(wrong_answers) < count and attempts < 10_000:
+        attempts += 1
+        candidate = list(correct_answer)
+        size = min(len(movable_positions), rng.randint(1, 2))
+        for position in rng.sample(movable_positions, size):
+            offset = rng.choice(deltas) * rng.choice((-1, 1))
+            candidate[position] = (candidate[position] + offset) % modulus
+        candidate_tuple = tuple(candidate)
+        if candidate_tuple != correct_answer:
             wrong_answers.add(candidate_tuple)
 
 

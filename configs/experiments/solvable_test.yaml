@@ -1,0 +1,51 @@
+schema_version: 1
+
+# Solvable-source counterpart of periodic_test_mixed.yaml. Each source trace
+# advances variables with `x <- (x + d) mod 100` and mixes in a log-uniformly
+# sampled count of constant resets; linked aperiodic and r-trivial rows are
+# derived from the same trace. Only the zero-based integer-code formatter can
+# render modular increments truthfully.
+dataset:
+  name: solvable-test-mixed
+  seed: 23
+  output_dir: ../../data/solvable-test-mixed
+
+splits:
+  test:
+    # Match periodic_test_mixed: 32 examples in each of eleven depth buckets.
+    samples_per_condition: 352
+
+generation:
+  query_mode: all
+  require_strict_witness: true
+  distinct_initial_values: false
+  aperiodic_constants: {min: 1, max: 64}
+  # Deltas are sampled uniformly in [1, 99]; any range generates Z_100.
+  increment_deltas: {min: 1, max: null}
+  conditions:
+    - complexity: solvable
+      splits: [test]
+      formatters: [integer-code-modular]
+      num_variables: [2, 4, 8, 16]
+      num_values: 100
+      extra_assignments:
+        distribution: log-spaced
+        min: 64
+        max: 64000
+        growth_factor: 2.0
+        sample_decay: 1.0
+        jitter_fraction: 0.0
+        min_samples_per_bucket: 32
+      filler:
+        proportions: [0.0]
+
+formatters:
+  - config: ../formats/integer-code-modular.yaml
+
+output:
+  include_canonical_trace: true
+  include_final_state: true
+  shard_size: 1000
+  multiple_choice:
+    num_distractors: 4
+    shuffle_choices: true

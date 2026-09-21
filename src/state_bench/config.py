@@ -11,6 +11,7 @@ from typing import Literal, cast
 import yaml
 from pydantic import BaseModel, ConfigDict, Field, PositiveInt, model_validator
 
+from state_bench.generation import SOURCE_COMPLEXITIES
 from state_bench.model import Complexity, QueryMode
 
 _FORMATTER_CONFIG_HASH_CACHE: dict[int, tuple[object, str]] = {}
@@ -74,6 +75,28 @@ class AperiodicConstantsSpec(StrictModel):
         return self
 
 
+class IncrementDeltaSpec(StrictModel):
+    """Inclusive range of ``delta`` values for solvable-source increments.
+
+    Each ``x <- (x + delta) mod num_values`` update samples its delta uniformly
+    from [min, max]. ``max: null`` means ``num_values - 1``. Any range generates
+    the full cyclic group of order ``num_values``; narrower ranges only reduce
+    the arithmetic each update demands.
+    """
+
+    min: int = Field(default=1, ge=1)
+    max: int | None = Field(default=None, ge=1)
+
+    @model_validator(mode="after")
+    def ordered(self) -> IncrementDeltaSpec:
+        if self.max is not None and self.max < self.min:
+            raise ValueError("max must be greater than or equal to min")
+        return self
+
+    def resolve_max(self, num_values: int) -> int:
+        return num_values - 1 if self.max is None else self.max
+
+
 FillerDistraction = Literal["easy", "medium", "hard"]
 
 
@@ -132,6 +155,7 @@ class GenerationSpec(StrictModel):
     require_strict_witness: bool = True
     distinct_initial_values: bool = False
     aperiodic_constants: AperiodicConstantsSpec = AperiodicConstantsSpec(min=1, max=64)
+    increment_deltas: IncrementDeltaSpec = IncrementDeltaSpec()
     conditions: list[ConditionSpec]
 
     @model_validator(mode="after")
@@ -150,9 +174,9 @@ class GenerationSpec(StrictModel):
             ]
         ] = set()
         for condition in self.conditions:
-            if condition.complexity is not Complexity.PERIODIC:
+            if condition.complexity not in SOURCE_COMPLEXITIES:
                 raise ValueError(
-                    "generation conditions must describe periodic source traces; "
+                    "generation conditions must describe periodic or solvable source traces; "
                     "aperiodic and r-trivial traces are derived automatically"
                 )
             for num_variables in condition.num_variables:
@@ -175,17 +199,29 @@ class GenerationSpec(StrictModel):
                     and condition.extra_assignments.min < 1
                 ):
                     raise ValueError(
-                        "strict periodic source conditions need at least one extra assignment"
+                        f"strict {condition.complexity.value} source conditions need at least "
+                        "one extra assignment"
                     )
-                if (
-                    self.require_strict_witness
-                    and (num_variables < 2 or condition.num_values < 2)
-                ):
-                    raise ValueError("strict periodic conditions need at least two variables and values")
-                if condition.extra_assignments.max < 3:
-                    raise ValueError(
-                        "swap-periodic sampling requires room for three extra assignments"
-                    )
+                if condition.complexity is Complexity.PERIODIC:
+                    if (
+                        self.require_strict_witness
+                        and (num_variables < 2 or condition.num_values < 2)
+                    ):
+                        raise ValueError(
+                            "strict periodic conditions need at least two variables and values"
+                        )
+                    if condition.extra_assignments.max < 3:
+                        raise ValueError(
+                            "swap-periodic sampling requires room for three extra assignments"
+                        )
+                else:
+                    if condition.num_values < 2:
+                        raise ValueError("solvable conditions need at least two values")
+                    if self.increment_deltas.resolve_max(condition.num_values) >= condition.num_values:
+                        raise ValueError(
+                            "increment_deltas.max must be smaller than every solvable condition's "
+                            "num_values"
+                        )
         return self
 
 
@@ -412,6 +448,8 @@ class TemplatesSpec(StrictModel):
     task_description: TemplateValue | None = None
     assign_constant: TemplateValue
     assign_reference: TemplateValue
+    # Required only by formatters that render solvable (increment) traces.
+    assign_increment: TemplateValue | None = None
     answer_prompt: TemplateValue | None = None
     state_assertion: TemplateValue
     filler_easy: TemplateValue | None = None
@@ -458,6 +496,10 @@ class FormatterSpec(StrictModel):
             "task_description": (self.templates.task_description, metadata),
             "assign_constant": (self.templates.assign_constant, metadata | {"target", "value"}),
             "assign_reference": (self.templates.assign_reference, metadata | {"target", "source"}),
+            "assign_increment": (
+                self.templates.assign_increment,
+                metadata | {"target", "delta", "modulus"},
+            ),
             "answer_prompt": (self.templates.answer_prompt, metadata),
             "state_assertion": (self.templates.state_assertion, metadata | {"variable", "value"}),
             "filler_easy": (
@@ -590,6 +632,9 @@ def _validate_condition_formatters(
         unknown = selected - available.keys()
         if unknown:
             raise ValueError(f"condition references unknown formatters: {sorted(unknown)}")
+        if condition.complexity is Complexity.SOLVABLE:
+            for name in sorted(selected):
+                _validate_increment_formatter(available[name], num_values=condition.num_values)
         if any(proportion > 0 for proportion in condition.filler.proportions):
             for name in selected:
                 formatter = available[name]
@@ -598,6 +643,32 @@ def _validate_condition_formatters(
                         raise ValueError(
                             f"formatter {name!r} has no filler_{level} template required by condition"
                         )
+
+
+def _validate_increment_formatter(formatter: FormatterSpec, *, num_values: int) -> None:
+    """Require what a formatter needs to render ``x <- (x + delta) mod num_values``.
+
+    The rendered arithmetic is only truthful when the surface value for index
+    ``i`` is literally ``str(i)``; a one-based vocabulary such as ``"1".."100"``
+    would wrap to a value the modulus never produces.
+    """
+
+    if formatter.templates.assign_increment is None:
+        raise ValueError(
+            f"formatter {formatter.name!r} has no assign_increment template required by a "
+            "solvable condition"
+        )
+    if formatter.vocabulary.value_selection != "prefix":
+        raise ValueError(
+            f"formatter {formatter.name!r} must use a fixed zero-based numeric value vocabulary "
+            "to render solvable conditions"
+        )
+    values = formatter.vocabulary.values[:num_values]
+    if len(values) < num_values or any(value != str(index) for index, value in enumerate(values)):
+        raise ValueError(
+            f"formatter {formatter.name!r} must define values \"0\" through \"{num_values - 1}\" in "
+            "order so modular increments render truthfully for solvable conditions"
+        )
 
 
 def _validate_split_formatters(

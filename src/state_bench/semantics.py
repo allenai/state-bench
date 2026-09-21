@@ -8,7 +8,13 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Any
 
-from state_bench.model import AssignConstant, AssignVariable, Operation, StateTrackingInstance
+from state_bench.model import (
+    AssignConstant,
+    AssignIncrement,
+    AssignVariable,
+    Operation,
+    StateTrackingInstance,
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -48,7 +54,10 @@ class SensitivitySummary:
 
 
 def evaluate(*, num_variables: int, num_values: int, operations: Sequence[Operation]) -> tuple[int, ...]:
-    """Evaluate eager, copy-at-assignment-time variable semantics."""
+    """Evaluate eager, copy-at-assignment-time variable semantics.
+
+    Increments wrap modulo ``num_values``: ``x <- (x + delta) mod num_values``.
+    """
 
     if num_variables < 1:
         raise ValueError("num_variables must be positive")
@@ -68,6 +77,13 @@ def evaluate(*, num_variables: int, num_values: int, operations: Sequence[Operat
             if source_value is None:
                 raise ValueError(f"operation {index} reads uninitialized variable {operation.source}")
             state[operation.target] = source_value
+        elif isinstance(operation, AssignIncrement):
+            if not 0 < operation.delta < num_values:
+                raise ValueError(f"operation {index} has out-of-range delta {operation.delta}")
+            current = state[operation.target]
+            if current is None:
+                raise ValueError(f"operation {index} increments uninitialized variable {operation.target}")
+            state[operation.target] = (current + operation.delta) % num_values
 
     uninitialized = [index for index, value in enumerate(state) if value is None]
     if uninitialized:
@@ -80,7 +96,10 @@ def dependency_lengths(
     num_variables: int,
     operations: Sequence[Operation],
 ) -> tuple[int, ...]:
-    """Return each final variable's eager-copy hop count back to a constant assignment."""
+    """Return each final variable's eager-copy hop count back to a constant assignment.
+
+    An increment is a self-referential hop: it extends the target's own chain by one.
+    """
 
     if num_variables < 1:
         raise ValueError("num_variables must be positive")
@@ -95,6 +114,11 @@ def dependency_lengths(
             if source_depth is None:
                 raise ValueError(f"operation {index} reads uninitialized variable {operation.source}")
             depths[operation.target] = source_depth + 1
+        elif isinstance(operation, AssignIncrement):
+            current_depth = depths[operation.target]
+            if current_depth is None:
+                raise ValueError(f"operation {index} increments uninitialized variable {operation.target}")
+            depths[operation.target] = current_depth + 1
 
     uninitialized = [index for index, depth in enumerate(depths) if depth is None]
     if uninitialized:
@@ -128,7 +152,8 @@ def sensitivity_summary(instance: StateTrackingInstance) -> SensitivitySummary:
     three-assignment TMP swap is sampled only after the complete swap, while
     ordinary constant assignments remain individual semantic operations. A
     reverse pass propagates query-output bitsets through every primitive copy
-    and kills them at constant assignments.
+    and kills them at constant assignments. Increments are bijections of their
+    target's value, so they carry the target's bitset through unchanged.
     """
 
     start = _fully_initialized_boundary(
@@ -173,6 +198,8 @@ def sensitivity_summary(instance: StateTrackingInstance) -> SensitivitySummary:
                 if target < num_variables:
                     total_affected_outputs -= previous.bit_count()
                     live_variables -= 1
+        elif type(operation) is AssignIncrement:
+            pass
         else:
             source = operation.source
             if not 0 <= source < num_registers:

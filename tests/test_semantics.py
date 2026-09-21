@@ -4,7 +4,7 @@ import random
 
 import pytest
 
-from state_bench.generation import derive_instance, derive_variants, generate_instance
+from state_bench.generation import derive_instance, derive_variants, derived_families, generate_instance
 from state_bench.model import AssignConstant, AssignVariable, Complexity, StateTrackingInstance
 from state_bench.semantics import dependency_lengths, dependency_summary, evaluate, sensitivity_summary
 
@@ -151,7 +151,8 @@ def test_derived_families_resolve_periodic_references_from_one_source() -> None:
         assert operation.value == first_values[operation.target]
 
     assert derive_variants(source) == tuple(
-        derive_instance(source, complexity=complexity) for complexity in Complexity
+        derive_instance(source, complexity=complexity)
+        for complexity in derived_families(source.complexity)
     )
 
 
@@ -168,7 +169,8 @@ def test_batched_derivations_preserve_trace_alignment_and_final_states(seed: int
     variants = derive_variants(periodic)
 
     assert variants == tuple(
-        derive_instance(periodic, complexity=complexity) for complexity in Complexity
+        derive_instance(periodic, complexity=complexity)
+        for complexity in derived_families(periodic.complexity)
     )
     for variant in variants:
         assert variant.query == periodic.query

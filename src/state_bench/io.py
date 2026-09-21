@@ -30,7 +30,7 @@ from state_bench.config import (
     split_uses_formatter,
 )
 from state_bench.distractors import generate_incorrect_states
-from state_bench.generation import derive_variants, generate_periodic_source
+from state_bench.generation import derive_variants, derived_families, generate_source
 from state_bench.model import Complexity, QueryMode, StateTrackingInstance
 from state_bench.rendering import RenderedExample, render_instance
 from state_bench.scheduling import (
@@ -125,6 +125,7 @@ class _GenerationTask:
     """All information needed to generate one deterministic source triplet."""
 
     source_example_id: str
+    source_complexity: Complexity
     num_variables: int
     num_values: int
     min_extra_assignments: int
@@ -134,6 +135,8 @@ class _GenerationTask:
     require_strict_witness: bool
     min_aperiodic_constants: int
     max_aperiodic_constants: int
+    min_increment_delta: int
+    max_increment_delta: int
     root_seed: int
     excluded_semantics: frozenset[str]
     plan_item: AssignmentPlanItem
@@ -235,7 +238,8 @@ def _generate_instances(
             if retry_index == 0
             else derive_seed(task.root_seed, "semantic-retry", task.source_example_id, str(retry_index))
         )
-        source = generate_periodic_source(
+        source = generate_source(
+            complexity=task.source_complexity,
             num_variables=task.num_variables,
             num_values=task.num_values,
             min_extra_assignments=task.min_extra_assignments,
@@ -245,6 +249,8 @@ def _generate_instances(
             require_strict_witness=task.require_strict_witness,
             min_aperiodic_constants=task.min_aperiodic_constants,
             max_aperiodic_constants=task.max_aperiodic_constants,
+            min_increment_delta=task.min_increment_delta,
+            max_increment_delta=task.max_increment_delta,
             rng=random.Random(retry_seed),
         )
         instances = derive_variants(source)
@@ -268,7 +274,9 @@ def _write_minimal_chunk(task: _MinimalChunkTask) -> _MinimalChunkResult:
     try:
         for sample_task in task.samples:
             generated = _generate_instances(sample_task)
-            for complexity, instance in zip(Complexity, generated.instances, strict=True):
+            for complexity, instance in zip(
+                derived_families(generated.source.complexity), generated.instances, strict=True
+            ):
                 example_id = _derived_example_id(generated.source_example_id, complexity)
                 # Sensitivity depends only on the instance; compute it once and
                 # reuse it across every formatter rendered from this instance.
@@ -345,7 +353,9 @@ def _emit_sample_records(generated: _GeneratedSample, context: _EmitContext) -> 
     instance_ids: list[str] = []
     unique_pairs: list[tuple[str, str]] = []
     needs_canonical_record = context.write_canonical or not context.minimal_output
-    for complexity, instance in zip(Complexity, generated.instances, strict=True):
+    for complexity, instance in zip(
+                derived_families(generated.source.complexity), generated.instances, strict=True
+            ):
         example_id = _derived_example_id(source_example_id, complexity)
         sensitivity = sensitivity_summary(instance)
         dependencies = (
@@ -540,10 +550,9 @@ def build_dataset(
     canonical_handles: dict[str, Any] = {}
     rendered_handles: dict[tuple[str, str], Any] = {}
     total_examples = sum(
-        len(Complexity)
-        * split.samples_per_condition
+        split.samples_per_condition
         * sum(
-            len(condition.num_variables)
+            len(derived_families(condition.complexity)) * len(condition.num_variables)
             for condition in spec.generation.conditions
             if condition_uses_split(condition, split_name)
         )
@@ -591,7 +600,7 @@ def build_dataset(
                     complexity=complexity.value,
                 )
                 for condition in spec.generation.conditions
-                for complexity in Complexity
+                for complexity in derived_families(condition.complexity)
                 if condition_uses_formatter(condition, formatter.name)
             }
             for config_name in sorted(config_names):
@@ -625,10 +634,11 @@ def build_dataset(
             for condition_index, condition in enumerate(spec.generation.conditions):
                 if not condition_uses_split(condition, split_name):
                     continue
+                family_count = len(derived_families(condition.complexity))
                 for num_variables in condition.num_variables:
                     progress.set_postfix(
                         split=split_name,
-                        source="periodic",
+                        source=condition.complexity.value,
                         variables=num_variables,
                         refresh=False,
                     )
@@ -704,7 +714,7 @@ def build_dataset(
                             source_example_id=_example_id(
                                 dataset=spec.dataset.name,
                                 split=split_name,
-                                complexity="periodic-source",
+                                complexity=f"{condition.complexity.value}-source",
                                 num_variables=num_variables,
                                 num_values=condition.num_values,
                                 condition_index=condition_index,
@@ -713,6 +723,7 @@ def build_dataset(
                                 filler_proportion=filler_item.proportion,
                                 filler_distraction=filler_item.distraction,
                             ),
+                            source_complexity=condition.complexity,
                             num_variables=num_variables,
                             num_values=condition.num_values,
                             min_extra_assignments=plan_item.min_extra_assignments,
@@ -722,6 +733,10 @@ def build_dataset(
                             require_strict_witness=spec.generation.require_strict_witness,
                             min_aperiodic_constants=spec.generation.aperiodic_constants.min,
                             max_aperiodic_constants=spec.generation.aperiodic_constants.max,
+                            min_increment_delta=spec.generation.increment_deltas.min,
+                            max_increment_delta=spec.generation.increment_deltas.resolve_max(
+                                condition.num_values
+                            ),
                             root_seed=spec.dataset.seed,
                             excluded_semantics=frozen_excluded_semantics,
                             plan_item=plan_item,
@@ -773,7 +788,7 @@ def build_dataset(
                                     )
                                 chunk_path.unlink()
                                 counts[f"{config_name}/{split_name}"] += row_count
-                            progress.update(len(Complexity) * result.source_count)
+                            progress.update(family_count * result.source_count)
                         continue
                     emit_context = _EmitContext(
                         formatters=tuple(
@@ -842,7 +857,7 @@ def build_dataset(
                                 split_semantics[split_name].update(result.instance_ids)
                             for unique_key, instance_id in result.unique_pairs:
                                 unique_semantics[unique_key].add(instance_id)
-                            progress.update(len(Complexity) * result.source_count)
+                            progress.update(family_count * result.source_count)
                     else:
                         for generated in map(_generate_instances, tasks):
                             emission = _emit_sample_records(generated, emit_context)
@@ -858,7 +873,7 @@ def build_dataset(
                                 split_semantics[split_name].update(emission.instance_ids)
                             for unique_key, instance_id in emission.unique_pairs:
                                 unique_semantics[unique_key].add(instance_id)
-                            progress.update(len(Complexity))
+                            progress.update(family_count)
     finally:
         progress.close()
         if executor is not None:

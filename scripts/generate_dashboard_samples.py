@@ -8,9 +8,8 @@ from pathlib import Path
 
 from state_bench.config import FillerDistraction, load_formatter
 from state_bench.distractors import generate_incorrect_states
-from state_bench.generation import derive_instance, generate_periodic_source
+from state_bench.generation import derive_instance, derived_families, generate_periodic_source
 from state_bench.io import derive_seed
-from state_bench.model import Complexity
 from state_bench.rendering import render_instance
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -48,7 +47,7 @@ def main() -> None:
             rng=random.Random(derive_seed(29, "dashboard-source", str(sample_index))),
         )
         for proportion, distraction in PADDING_VARIANTS:
-            for complexity in Complexity:
+            for complexity in derived_families(source.complexity):
                 instance = derive_instance(source, complexity=complexity)
                 incorrect_states = generate_incorrect_states(
                     instance,

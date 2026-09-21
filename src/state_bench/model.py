@@ -10,10 +10,18 @@ from typing import Any
 
 
 class Complexity(StrEnum):
-    """Algebraic family used to generate a state-tracking instance."""
+    """Algebraic family used to generate a state-tracking instance.
+
+    Members are ordered from least to most expressive. ``SOLVABLE`` refines
+    ``PERIODIC``: its transition monoid contains nontrivial groups, but every
+    group in its Krohn-Rhodes decomposition is solvable (in fact cyclic),
+    whereas swap-periodic traces on five or more variables realize the
+    non-solvable symmetric group.
+    """
 
     R_TRIVIAL = "r-trivial"
     APERIODIC = "aperiodic"
+    SOLVABLE = "solvable"
     PERIODIC = "periodic"
 
 
@@ -41,7 +49,23 @@ class AssignVariable:
         return {"op": "variable", "target": self.target, "source": self.source}
 
 
-type Operation = AssignConstant | AssignVariable
+@dataclass(frozen=True, slots=True)
+class AssignIncrement:
+    """``target <- (target + delta) mod num_values``: a cyclic self-update.
+
+    Increments generate the cyclic group of order ``num_values`` on a single
+    register and never mix registers, so traces built from constants and
+    increments have solvable (abelian) group complexity.
+    """
+
+    target: int
+    delta: int
+
+    def to_record(self) -> dict[str, int | str]:
+        return {"op": "increment", "target": self.target, "delta": self.delta}
+
+
+type Operation = AssignConstant | AssignVariable | AssignIncrement
 
 
 @dataclass(frozen=True, slots=True)
@@ -159,8 +183,10 @@ def _semantic_digest(
     for operation in operations:
         if isinstance(operation, AssignConstant):
             operation_ints += (0, operation.target, operation.value)
-        else:
+        elif isinstance(operation, AssignVariable):
             operation_ints += (1, operation.target, operation.source)
+        else:
+            operation_ints += (2, operation.target, operation.delta)
     buffer += struct.pack("<i", len(operations))
     buffer += struct.pack(f"<{len(operation_ints)}i", *operation_ints)
     return hashlib.sha256(buffer).hexdigest()[:20]
@@ -174,6 +200,10 @@ def semantic_record_from_dict(record: dict[str, Any]) -> dict[str, Any]:
         elif operation["op"] == "variable":
             operations.append(
                 AssignVariable(target=int(operation["target"]), source=int(operation["source"]))
+            )
+        elif operation["op"] == "increment":
+            operations.append(
+                AssignIncrement(target=int(operation["target"]), delta=int(operation["delta"]))
             )
         else:
             raise ValueError(f"unknown operation type: {operation['op']!r}")

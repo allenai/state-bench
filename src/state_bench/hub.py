@@ -687,8 +687,11 @@ retains the unstratified base splits.
 
 # {loaded.spec.dataset.name}
 
-Synthetic evaluations of state tracking across three algebraic families:
-`r-trivial`, `aperiodic`, and `periodic`.
+Synthetic evaluations of state tracking across four algebraic families:
+`r-trivial`, `aperiodic`, `solvable`, and `periodic`. Solvable traces advance
+variables with modular increments (`x <- (x + d) mod n`), whose transition
+monoid contains only solvable (cyclic) groups; periodic traces permute variable
+contents via swaps.
 
 Available surface formatters: {formatter_names}.
 
@@ -702,6 +705,7 @@ reproduction metadata.
 
 Reference assignments use eager copy semantics: assigning one variable from
 another copies its value at that point in the trace and does not create an alias.
+Increments wrap modulo the condition's value count.
 """
 
 

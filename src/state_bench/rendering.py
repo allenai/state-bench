@@ -9,7 +9,12 @@ from string import Template
 from typing import Any
 
 from state_bench.config import FillerDistraction, FormatterSpec, TemplateValue
-from state_bench.model import AssignConstant, AssignVariable, StateTrackingInstance
+from state_bench.model import (
+    AssignConstant,
+    AssignIncrement,
+    AssignVariable,
+    StateTrackingInstance,
+)
 from state_bench.semantics import (
     DependencySummary,
     SensitivitySummary,
@@ -122,8 +127,13 @@ def render_instance(
     metadata_keys = frozenset(metadata)
     constant_allowed = metadata_keys | {"target", "value"}
     reference_allowed = metadata_keys | {"target", "source"}
+    increment_allowed = metadata_keys | {"target", "delta", "modulus"}
     constant_values = dict(metadata)
     reference_values = dict(metadata)
+    # Deltas and the modulus are arithmetic literals, not vocabulary indices;
+    # config validation guarantees the value vocabulary is zero-based digits
+    # wherever increments are rendered, so ``str(...)`` keeps them consistent.
+    increment_values = {**metadata, "modulus": str(instance.num_values)}
 
     instructions: list[str] = []
     for operation in instance.operations:
@@ -137,6 +147,16 @@ def render_instance(
             reference_values["target"] = surface_variables[operation.target]
             reference_values["source"] = surface_variables[operation.source]
             instructions.append(_substitute(template, reference_allowed, reference_values))
+        elif isinstance(operation, AssignIncrement):
+            if formatter.templates.assign_increment is None:
+                raise ValueError(
+                    f"formatter {formatter.name!r} has no assign_increment template but the "
+                    "trace contains increments"
+                )
+            template = _choose(formatter.templates.assign_increment, rng)
+            increment_values["target"] = surface_variables[operation.target]
+            increment_values["delta"] = str(operation.delta)
+            instructions.append(_substitute(template, increment_allowed, increment_values))
 
     task_description = _optional_render(formatter.templates.task_description, metadata, rng)
     answer_prompt = _optional_render(formatter.templates.answer_prompt, metadata, rng)
