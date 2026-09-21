@@ -2,10 +2,10 @@
 # Build every training distribution and put it in place, end to end:
 #
 #   1. Build the `test` split (needed for train disjointness IDs).
-#   2. Build the `train` split (r-trivial, aperiodic, periodic rendered configs).
-#   3. Partition the periodic train split into sensitivity-quantile bucket
-#      datasets under <output_dir>/rendered-sensitivity/ (kept out of rendered/
-#      so hub staging never uploads them).
+#   2. Build the `train` split (every rendered config the experiment emits).
+#   3. Partition the $PERIODIC_CONFIG train split into sensitivity-quantile
+#      bucket datasets under <output_dir>/rendered-sensitivity/ (kept out of
+#      rendered/ so hub staging never uploads them). Optional: --skip-partition.
 #   4. Tokenize the train splits of rendered/ and rendered-sensitivity/, and
 #      merge the bucket token directories into <output_dir>/rendered-tokenized/
 #      tokens/ alongside the base distributions -- the layout the olmo-core
@@ -25,13 +25,16 @@ SENS_BUCKETS="${SENS_BUCKETS:-16}"
 SENS_FIELD="${SENS_FIELD:-sensitivity_coverage}"
 PERIODIC_CONFIG="${PERIODIC_CONFIG:-integer-code--periodic}"
 SKIP_TEST=0
+SKIP_BUILD=0
+SKIP_PARTITION=0
 SKIP_TOKENIZE=0
 
 TOKENIZE_ONLY=0
 
 usage() {
     cat <<'EOF'
-Usage: bash scripts/build_train.sh [--skip-test] [--skip-tokenize] [--tokenize-only] [--config PATH]
+Usage: bash scripts/build_train.sh [--skip-test] [--skip-build] [--skip-partition]
+                                   [--skip-tokenize] [--tokenize-only] [--config PATH]
 
 Build the `test` split (for its persisted semantic IDs), build the `train`
 split, partition the periodic train split into sensitivity buckets, and
@@ -40,6 +43,12 @@ tokenize everything into <output_dir>/rendered-tokenized/tokens/.
 Options:
   --skip-test       Skip building `test`; reuse the semantics/test.ids already
                     persisted in the output directory from a prior build.
+  --skip-build      Skip both the `test` and `train` builds; reuse the existing
+                    rendered/ tree and go straight to the partition. Use to
+                    resume after a partition or tokenization failure.
+  --skip-partition  Do not partition into sensitivity buckets and do not
+                    tokenize buckets. Only the base rendered distributions are
+                    tokenized, and any stale rendered-sensitivity/ is removed.
   --skip-tokenize   Stop after the sensitivity partition; leave tokenization
                     for a separate run (e.g. on a high-CPU machine).
   --tokenize-only   Skip the builds and the sensitivity partition and run just
@@ -65,6 +74,8 @@ EOF
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --skip-test) SKIP_TEST=1; shift ;;
+        --skip-build) SKIP_BUILD=1; shift ;;
+        --skip-partition) SKIP_PARTITION=1; shift ;;
         --skip-tokenize) SKIP_TOKENIZE=1; shift ;;
         --tokenize-only) TOKENIZE_ONLY=1; shift ;;
         --config) CONFIG="$2"; shift 2 ;;
@@ -92,29 +103,42 @@ SENS_DIR="$DATASET_ROOT/rendered-sensitivity"
 
 if [[ "$TOKENIZE_ONLY" -eq 1 ]]; then
     echo ">> Skipping builds and partition (--tokenize-only); reusing rendered/ and rendered-sensitivity/"
-    if [[ ! -d "$SENS_DIR" ]]; then
-        echo "missing $SENS_DIR; run without --tokenize-only first" >&2
+    if [[ "$SKIP_PARTITION" -eq 0 && ! -d "$SENS_DIR" ]]; then
+        echo "missing $SENS_DIR; run without --tokenize-only first, or add --skip-partition" >&2
         exit 1
     fi
 else
 
-if [[ "$SKIP_TEST" -eq 1 ]]; then
-    echo ">> Skipping test build; reusing persisted semantics/test.ids"
+if [[ "$SKIP_BUILD" -eq 1 ]]; then
+    echo ">> Skipping test and train builds (--skip-build); reusing $DATASET_ROOT/rendered"
+    if [[ ! -f "$DATASET_ROOT/rendered/$PERIODIC_CONFIG/train.jsonl" ]]; then
+        echo "missing $DATASET_ROOT/rendered/$PERIODIC_CONFIG/train.jsonl; run without --skip-build first" >&2
+        exit 1
+    fi
 else
-    echo ">> Building test split from $CONFIG (needed for train disjointness)"
-    uv run state-bench build "$CONFIG" --splits test
+    if [[ "$SKIP_TEST" -eq 1 ]]; then
+        echo ">> Skipping test build; reusing persisted semantics/test.ids"
+    else
+        echo ">> Building test split from $CONFIG (needed for train disjointness)"
+        uv run state-bench build "$CONFIG" --splits test
+    fi
+
+    echo ">> Building train split from $CONFIG"
+    uv run state-bench build "$CONFIG" --splits train
 fi
 
-echo ">> Building train split from $CONFIG"
-uv run state-bench build "$CONFIG" --splits train
-
-echo ">> Partitioning $PERIODIC_CONFIG train split into $SENS_BUCKETS sensitivity buckets"
-rm -rf "$SENS_DIR"
-uv run scripts/partition_train_by_sensitivity.py \
-    "$DATASET_ROOT/rendered/$PERIODIC_CONFIG/train.jsonl" \
-    --output "$SENS_DIR" \
-    --buckets "$SENS_BUCKETS" \
-    --field "$SENS_FIELD"
+if [[ "$SKIP_PARTITION" -eq 1 ]]; then
+    echo ">> Skipping sensitivity partition (--skip-partition)"
+    rm -rf "$SENS_DIR"
+else
+    echo ">> Partitioning $PERIODIC_CONFIG train split into $SENS_BUCKETS sensitivity buckets"
+    rm -rf "$SENS_DIR"
+    uv run scripts/partition_train_by_sensitivity.py \
+        "$DATASET_ROOT/rendered/$PERIODIC_CONFIG/train.jsonl" \
+        --output "$SENS_DIR" \
+        --buckets "$SENS_BUCKETS" \
+        --field "$SENS_FIELD"
+fi
 
 fi  # TOKENIZE_ONLY
 
@@ -149,13 +173,17 @@ uv run --extra tokenization scripts/tokenize_dataset.py "$DATASET_ROOT/rendered"
     --destination "$TOKENS_DEST" \
     --only-splits train
 
-echo ">> Tokenizing sensitivity buckets into $SENS_TOKENS_DEST"
-rm -rf "$SENS_TOKENS_DEST"
-uv run --extra tokenization scripts/tokenize_dataset.py "$SENS_DIR" --destination "$SENS_TOKENS_DEST"
+if [[ "$SKIP_PARTITION" -eq 1 ]]; then
+    echo ">> Skipping bucket tokenization (--skip-partition)"
+else
+    echo ">> Tokenizing sensitivity buckets into $SENS_TOKENS_DEST"
+    rm -rf "$SENS_TOKENS_DEST"
+    uv run --extra tokenization scripts/tokenize_dataset.py "$SENS_DIR" --destination "$SENS_TOKENS_DEST"
 
-echo ">> Merging bucket token directories into $TOKENS_DEST/tokens/"
-mv "$SENS_TOKENS_DEST/tokens/"* "$TOKENS_DEST/tokens/"
-rm -rf "$SENS_TOKENS_DEST"
+    echo ">> Merging bucket token directories into $TOKENS_DEST/tokens/"
+    mv "$SENS_TOKENS_DEST/tokens/"* "$TOKENS_DEST/tokens/"
+    rm -rf "$SENS_TOKENS_DEST"
+fi
 
 echo ">> Done. Training distributions in $TOKENS_DEST/tokens/:"
 ls -1 "$TOKENS_DEST/tokens/"
