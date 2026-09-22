@@ -84,6 +84,14 @@ def build_parser() -> argparse.ArgumentParser:
         type=Path,
         help="Defaults to a sibling build/<source-directory-name> path.",
     )
+    stage.add_argument(
+        "--splits",
+        nargs="+",
+        help=(
+            "Stage only these base splits (e.g. test). By default every generated split under "
+            "the source directory is staged, including a large train split if one was built."
+        ),
+    )
 
     validate = hub_commands.add_parser("validate", help="Validate a staged repository offline.")
     validate.add_argument("repo_dir", type=Path)
@@ -178,6 +186,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 source_dir=source_dir,
                 repo_dir=repo_dir,
                 workers=args.workers,
+                only_splits=frozenset(args.splits) if args.splits else None,
             )
         )
         return 0

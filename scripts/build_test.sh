@@ -26,7 +26,7 @@ Options:
 
 Steps:
   1. state-bench build CONFIG --splits test
-  2. state-bench hub stage CONFIG        (needs the hub + analysis extras)
+  2. state-bench hub stage CONFIG --splits test   (needs the hub + analysis extras)
   3. state-bench hub push REPO --sync    (--dry-run unless --push is given)
 
 Authenticate with `hf auth login` before running with --push.
@@ -48,7 +48,9 @@ uv run state-bench build "$CONFIG" --splits test
 echo ">> Staging Hugging Face repository"
 # hub stage prints the staged repo directory on stdout; keep only the last line
 # so tqdm progress on stderr does not interfere.
-repo_dir=$(uv run --extra hub --extra analysis state-bench hub stage "$CONFIG" | tail -n1)
+# Stage only the test split: the same output directory may also hold the
+# (very large) train split from build_train.sh, which never goes to the Hub.
+repo_dir=$(uv run --extra hub --extra analysis state-bench hub stage "$CONFIG" --splits test | tail -n1)
 echo ">> Staged at: $repo_dir"
 
 if [[ "$PUSH" -eq 1 ]]; then

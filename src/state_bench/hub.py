@@ -27,8 +27,17 @@ def stage_hub_repository(
     source_dir: Path,
     repo_dir: Path,
     workers: int | None = None,
+    only_splits: frozenset[str] | None = None,
 ) -> Path:
-    """Create a complete local Hub repository without network access."""
+    """Create a complete local Hub repository without network access.
+
+    ``only_splits`` restricts staging to those base splits (for example
+    ``{"test"}``), leaving other generated splits such as a large ``train``
+    out of the repository entirely.
+    """
+
+    if only_splits is not None and not only_splits:
+        raise ValueError("only_splits must not be empty")
 
     # Freely overwrite any prior staging: clear the directory so stale shards or
     # metadata from an earlier run cannot linger alongside the new artifacts.
@@ -46,7 +55,8 @@ def stage_hub_repository(
     total_rows = sum(
         int(count)
         for name, count in source_manifest["counts"].items()
-        if include_canonical or not name.startswith("canonical/")
+        if (include_canonical or not name.startswith("canonical/"))
+        and (only_splits is None or name.rpartition("/")[2] in only_splits)
     )
     progress = tqdm(
         total=total_rows,
@@ -76,6 +86,7 @@ def stage_hub_repository(
                     shard_size=loaded.spec.output.shard_size,
                     target_shard_bytes=loaded.spec.output.target_shard_bytes,
                     progress=progress,
+                    only_splits=only_splits,
                 )
             )
         rendered_dirs = [
@@ -92,6 +103,7 @@ def stage_hub_repository(
                 token_strata=token_strata,
                 tokenizer=tokenizer,
                 progress=progress,
+                only_splits=only_splits,
             )
 
         if staging_workers == 1:
@@ -281,6 +293,7 @@ def _stage_config(
     token_strata: TokenStratificationSpec | None = None,
     tokenizer: TokenizerLike | None = None,
     progress: Any | None = None,
+    only_splits: frozenset[str] | None = None,
 ) -> dict[str, Any]:
     if not source_dir.is_dir():
         raise FileNotFoundError(f"missing generated config directory: {source_dir}")
@@ -289,6 +302,8 @@ def _stage_config(
     data_files: list[dict[str, str]] = []
     for jsonl_path in sorted(source_dir.glob("*.jsonl")):
         split = jsonl_path.stem
+        if only_splits is not None and split not in only_splits:
+            continue
         if token_strata is None:
             _set_progress_context(progress, config=config_name, split=split, phase="parquet")
             writer = _ParquetShardWriter(
@@ -373,7 +388,7 @@ def _stage_config(
                     }
                 )
     if not data_files:
-        raise FileNotFoundError(f"no generated splits found under {source_dir}")
+        raise FileNotFoundError(f"no generated splits selected under {source_dir}")
     return {"config_name": config_name, "data_files": data_files}
 
 

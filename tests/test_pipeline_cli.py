@@ -679,6 +679,34 @@ def test_hub_sync_passes_delete_pattern_to_huggingface(
     assert upload_call["delete_patterns"] == "*"
 
 
+def test_stage_only_selected_splits(tmp_path: Path) -> None:
+    pytest.importorskip("pyarrow.parquet")
+    experiment = _small_experiment(tmp_path)
+    loaded = load_experiment(experiment)
+    output = build_dataset(loaded)
+    repo_dir = stage_hub_repository(
+        loaded,
+        source_dir=output,
+        repo_dir=tmp_path / "test-only-hub",
+        only_splits=frozenset({"test"}),
+    )
+    report = validate_hub_repository(repo_dir)
+    staged_splits = {key.rpartition("/")[2] for key in report["counts"]}
+    assert staged_splits == {"test"}
+    assert not list((repo_dir / "data").glob("*/train-*.parquet"))
+    with pytest.raises(ValueError, match="only_splits must not be empty"):
+        stage_hub_repository(
+            loaded, source_dir=output, repo_dir=tmp_path / "empty-hub", only_splits=frozenset()
+        )
+    with pytest.raises(FileNotFoundError, match="no generated splits selected"):
+        stage_hub_repository(
+            loaded,
+            source_dir=output,
+            repo_dir=tmp_path / "missing-hub",
+            only_splits=frozenset({"validation"}),
+        )
+
+
 def test_stage_and_validate_hub_repository(tmp_path: Path) -> None:
     parquet = pytest.importorskip("pyarrow.parquet")
     experiment = _small_experiment(tmp_path)
