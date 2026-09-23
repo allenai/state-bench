@@ -27,10 +27,11 @@ from state_bench.config import (
     LoadedExperiment,
     condition_uses_formatter,
     condition_uses_split,
+    split_families,
     split_uses_formatter,
 )
 from state_bench.distractors import generate_incorrect_states
-from state_bench.generation import derive_variants, derived_families, generate_source
+from state_bench.generation import DERIVED_FAMILIES, derive_variants, generate_periodic_source
 from state_bench.model import Complexity, QueryMode, StateTrackingInstance
 from state_bench.rendering import RenderedExample, render_instance
 from state_bench.scheduling import (
@@ -122,10 +123,10 @@ def _run_map_batch(function: Any, batch: tuple[Any, ...]) -> tuple[Any, ...]:
 
 @dataclass(frozen=True, slots=True)
 class _GenerationTask:
-    """All information needed to generate one deterministic source triplet."""
+    """All information needed to generate one deterministic source and its families."""
 
     source_example_id: str
-    source_complexity: Complexity
+    families: tuple[Complexity, ...]
     num_variables: int
     num_values: int
     min_extra_assignments: int
@@ -135,8 +136,6 @@ class _GenerationTask:
     require_strict_witness: bool
     min_aperiodic_constants: int
     max_aperiodic_constants: int
-    min_increment_delta: int
-    max_increment_delta: int
     root_seed: int
     excluded_semantics: frozenset[str]
     plan_item: AssignmentPlanItem
@@ -151,7 +150,11 @@ class _GeneratedSample:
     plan_item: AssignmentPlanItem
     filler_item: FillerPlanItem
     source: StateTrackingInstance
+    # Emitted instances, ordered like the task's families.
+    families: tuple[Complexity, ...]
     instances: tuple[StateTrackingInstance, ...]
+    # IDs of every derived family, emitted or not, for split disjointness.
+    semantic_ids: tuple[str, ...]
 
 
 @dataclass(frozen=True, slots=True)
@@ -229,7 +232,13 @@ class _FullChunkResult:
 def _generate_instances(
     task: _GenerationTask,
 ) -> _GeneratedSample:
-    """Generate a source and its derived variants in an isolated worker."""
+    """Generate a source and its derived variants in an isolated worker.
+
+    Disjointness is checked against every derived family, not only the emitted
+    ones, so a build that emits a subset of families (for example only
+    ``solvable``) regenerates exactly the sources of a build that emitted the
+    others from the same experiment.
+    """
 
     semantic_seed = derive_seed(task.root_seed, "semantic", task.source_example_id)
     for retry_index in range(10_000):
@@ -238,8 +247,7 @@ def _generate_instances(
             if retry_index == 0
             else derive_seed(task.root_seed, "semantic-retry", task.source_example_id, str(retry_index))
         )
-        source = generate_source(
-            complexity=task.source_complexity,
+        source = generate_periodic_source(
             num_variables=task.num_variables,
             num_values=task.num_values,
             min_extra_assignments=task.min_extra_assignments,
@@ -249,18 +257,19 @@ def _generate_instances(
             require_strict_witness=task.require_strict_witness,
             min_aperiodic_constants=task.min_aperiodic_constants,
             max_aperiodic_constants=task.max_aperiodic_constants,
-            min_increment_delta=task.min_increment_delta,
-            max_increment_delta=task.max_increment_delta,
             rng=random.Random(retry_seed),
         )
-        instances = derive_variants(source)
-        if not ({instance.instance_id for instance in instances} & task.excluded_semantics):
+        variants = dict(zip(DERIVED_FAMILIES, derive_variants(source), strict=True))
+        semantic_ids = tuple(instance.instance_id for instance in variants.values())
+        if not (set(semantic_ids) & task.excluded_semantics):
             return _GeneratedSample(
                 source_example_id=task.source_example_id,
                 plan_item=task.plan_item,
                 filler_item=task.filler_item,
                 source=source,
-                instances=instances,
+                families=task.families,
+                instances=tuple(variants[family] for family in task.families),
+                semantic_ids=semantic_ids,
             )
     raise RuntimeError(f"could not generate source {task.source_example_id!r} after 10000 attempts")
 
@@ -274,9 +283,7 @@ def _write_minimal_chunk(task: _MinimalChunkTask) -> _MinimalChunkResult:
     try:
         for sample_task in task.samples:
             generated = _generate_instances(sample_task)
-            for complexity, instance in zip(
-                derived_families(generated.source.complexity), generated.instances, strict=True
-            ):
+            for complexity, instance in zip(generated.families, generated.instances, strict=True):
                 example_id = _derived_example_id(generated.source_example_id, complexity)
                 # Sensitivity depends only on the instance; compute it once and
                 # reuse it across every formatter rendered from this instance.
@@ -350,12 +357,9 @@ def _emit_sample_records(generated: _GeneratedSample, context: _EmitContext) -> 
     filler_item = generated.filler_item
     source = generated.source
     lines: list[tuple[str, str]] = []
-    instance_ids: list[str] = []
     unique_pairs: list[tuple[str, str]] = []
     needs_canonical_record = context.write_canonical or not context.minimal_output
-    for complexity, instance in zip(
-                derived_families(generated.source.complexity), generated.instances, strict=True
-            ):
+    for complexity, instance in zip(generated.families, generated.instances, strict=True):
         example_id = _derived_example_id(source_example_id, complexity)
         sensitivity = sensitivity_summary(instance)
         dependencies = (
@@ -385,7 +389,6 @@ def _emit_sample_records(generated: _GeneratedSample, context: _EmitContext) -> 
             lines.append(("canonical", _serialize_line(canonical_record)))
         if context.track_unique:
             unique_pairs.append((f"canonical/{context.split_name}", instance.instance_id))
-        instance_ids.append(instance.instance_id)
 
         include_trace = not context.minimal_output and context.include_canonical_trace
         source_operations = (
@@ -464,7 +467,7 @@ def _emit_sample_records(generated: _GeneratedSample, context: _EmitContext) -> 
             if context.track_unique:
                 unique_pairs.append((f"{config_name}/{context.split_name}", instance.instance_id))
 
-    return _SampleEmission(tuple(lines), tuple(instance_ids), tuple(unique_pairs))
+    return _SampleEmission(tuple(lines), generated.semantic_ids, tuple(unique_pairs))
 
 
 def _write_full_chunk(task: _FullChunkTask) -> _FullChunkResult:
@@ -552,7 +555,7 @@ def build_dataset(
     total_examples = sum(
         split.samples_per_condition
         * sum(
-            len(derived_families(condition.complexity)) * len(condition.num_variables)
+            len(split_families(spec, split_name)) * len(condition.num_variables)
             for condition in spec.generation.conditions
             if condition_uses_split(condition, split_name)
         )
@@ -593,19 +596,24 @@ def build_dataset(
             generated_files.append(path)
 
         for formatter in loaded.formatters:
+            if not any(
+                condition_uses_formatter(condition, formatter.name)
+                for condition in spec.generation.conditions
+            ):
+                continue
             config_names = {
-                hub_config_name(
+                complexity: hub_config_name(
                     spec.huggingface.config_naming,
                     formatter=formatter.name,
                     complexity=complexity.value,
                 )
-                for condition in spec.generation.conditions
-                for complexity in derived_families(condition.complexity)
-                if condition_uses_formatter(condition, formatter.name)
+                for complexity in spec.generation.emitted_families()
             }
-            for config_name in sorted(config_names):
+            for complexity, config_name in sorted(config_names.items(), key=lambda item: item[1]):
                 for split, split_spec in spec.splits.items():
                     if not selected(split):
+                        continue
+                    if complexity not in split_families(spec, split):
                         continue
                     if not split_uses_formatter(split_spec, formatter.name):
                         continue
@@ -623,6 +631,7 @@ def build_dataset(
         for split_name, split_spec in spec.splits.items():
             if not selected(split_name):
                 continue
+            families = split_families(spec, split_name)
             excluded_semantics: set[str] = set()
             for disjoint_name in split_spec.disjoint_from:
                 if selected(disjoint_name):
@@ -634,7 +643,7 @@ def build_dataset(
             for condition_index, condition in enumerate(spec.generation.conditions):
                 if not condition_uses_split(condition, split_name):
                     continue
-                family_count = len(derived_families(condition.complexity))
+                family_count = len(families)
                 for num_variables in condition.num_variables:
                     progress.set_postfix(
                         split=split_name,
@@ -723,7 +732,7 @@ def build_dataset(
                                 filler_proportion=filler_item.proportion,
                                 filler_distraction=filler_item.distraction,
                             ),
-                            source_complexity=condition.complexity,
+                            families=families,
                             num_variables=num_variables,
                             num_values=condition.num_values,
                             min_extra_assignments=plan_item.min_extra_assignments,
@@ -733,10 +742,6 @@ def build_dataset(
                             require_strict_witness=spec.generation.require_strict_witness,
                             min_aperiodic_constants=spec.generation.aperiodic_constants.min,
                             max_aperiodic_constants=spec.generation.aperiodic_constants.max,
-                            min_increment_delta=spec.generation.increment_deltas.min,
-                            max_increment_delta=spec.generation.increment_deltas.resolve_max(
-                                condition.num_values
-                            ),
                             root_seed=spec.dataset.seed,
                             excluded_semantics=frozen_excluded_semantics,
                             plan_item=plan_item,

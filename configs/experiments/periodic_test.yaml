@@ -16,6 +16,8 @@ generation:
   require_strict_witness: true
   distinct_initial_values: false
   aperiodic_constants: {min: 0, max: 0}
+  # Solvable rows need the zero-based integer-code-modular formatter.
+  families: [r-trivial, aperiodic, periodic]
   conditions:
     - complexity: periodic
       splits: [test]

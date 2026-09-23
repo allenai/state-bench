@@ -3,18 +3,19 @@ from __future__ import annotations
 import random
 from itertools import product
 from pathlib import Path
+from typing import Any
 
 import pytest
 import yaml
 
-from state_bench.config import FormatterSpec, load_experiment, load_formatter
+from state_bench.config import FormatterSpec, load_experiment, load_formatter, split_families
 from state_bench.distractors import generate_incorrect_states
 from state_bench.generation import (
+    DERIVED_FAMILIES,
     derive_instance,
     derive_variants,
-    derived_families,
     generate_instance,
-    generate_source,
+    generate_periodic_source,
 )
 from state_bench.model import (
     AssignConstant,
@@ -27,19 +28,37 @@ from state_bench.rendering import render_instance
 from state_bench.semantics import dependency_lengths, evaluate, sensitivity_summary
 
 ROOT = Path(__file__).resolve().parents[1]
+EXPERIMENTS = ROOT / "configs/experiments"
 MODULAR_FORMATTER = ROOT / "configs/formats/integer-code-modular.yaml"
 
 
-def _solvable(seed: int, **overrides: object) -> StateTrackingInstance:
+def _periodic(seed: int, **overrides: object) -> StateTrackingInstance:
     parameters: dict[str, object] = {
-        "complexity": Complexity.SOLVABLE,
         "num_variables": 3,
         "num_values": 10,
-        "min_extra_assignments": 1,
-        "max_extra_assignments": 30,
+        "min_extra_assignments": 3,
+        "max_extra_assignments": 40,
     }
     parameters.update(overrides)
-    return generate_instance(rng=random.Random(seed), **parameters)  # type: ignore[arg-type]
+    return generate_periodic_source(rng=random.Random(seed), **parameters)  # type: ignore[arg-type]
+
+
+def _trajectory(instance: StateTrackingInstance) -> list[tuple[int | None, ...]]:
+    """Return the register state after every operation."""
+
+    state: list[int | None] = [None] * instance.num_registers
+    states = []
+    for operation in instance.operations:
+        if isinstance(operation, AssignConstant):
+            state[operation.target] = operation.value
+        elif isinstance(operation, AssignVariable):
+            state[operation.target] = state[operation.source]
+        else:
+            current = state[operation.target]
+            assert current is not None
+            state[operation.target] = (current + operation.delta) % instance.num_values
+        states.append(tuple(state))
+    return states
 
 
 def test_increment_semantics_wrap_modulo_num_values() -> None:
@@ -49,14 +68,21 @@ def test_increment_semantics_wrap_modulo_num_values() -> None:
         operations=(AssignConstant(0, 98), AssignIncrement(0, 5)),
     )
     assert final == (3,)
+    # Zero is the identity increment the derivation emits for unchanged copies.
+    assert evaluate(
+        num_variables=1,
+        num_values=100,
+        operations=(AssignConstant(0, 42), AssignIncrement(0, 0)),
+    ) == (42,)
     with pytest.raises(ValueError, match="uninitialized"):
         evaluate(num_variables=1, num_values=100, operations=(AssignIncrement(0, 5),))
-    with pytest.raises(ValueError, match="out-of-range delta"):
-        evaluate(
-            num_variables=1,
-            num_values=100,
-            operations=(AssignConstant(0, 1), AssignIncrement(0, 100)),
-        )
+    for delta in (-1, 100):
+        with pytest.raises(ValueError, match="out-of-range delta"):
+            evaluate(
+                num_variables=1,
+                num_values=100,
+                operations=(AssignConstant(0, 1), AssignIncrement(0, delta)),
+            )
 
 
 def test_increment_participates_in_instance_id_and_record_round_trip() -> None:
@@ -80,190 +106,120 @@ def test_increment_participates_in_instance_id_and_record_round_trip() -> None:
     assert incremented.to_record()["operations"][1] == {"op": "increment", "target": 0, "delta": 3}
 
 
-@pytest.mark.parametrize("seed", range(40))
-def test_solvable_generation_is_self_consistent_and_uses_only_constants_and_increments(
-    seed: int,
-) -> None:
-    num_variables = 1 + seed % 6
-    source = generate_source(
-        complexity=Complexity.SOLVABLE,
-        num_variables=num_variables,
-        num_values=max(num_variables, 2 + seed % 20),
-        min_extra_assignments=1,
-        max_extra_assignments=1 + (seed * 3) % 60,
-        min_aperiodic_constants=0 if seed % 4 == 0 else 1,
-        max_aperiodic_constants=0 if seed % 4 == 0 else 16,
-        distinct_initial_values=seed % 2 == 0,
-        rng=random.Random(seed),
-    )
-    assert source.complexity is Complexity.SOLVABLE
-    assert source.temporary_variable is None
-    assert source.query == tuple(range(source.num_variables))
-    assert source.final_state == evaluate(
-        num_variables=source.num_variables,
-        num_values=source.num_values,
-        operations=source.operations,
-    )
-    kinds = {type(operation) for operation in source.operations}
-    assert AssignVariable not in kinds
-    assert AssignIncrement in kinds, "strict solvable sources carry at least one increment"
-    # Every register is initialised by a literal before anything else touches it.
-    initial = source.operations[: source.num_variables]
-    assert all(isinstance(operation, AssignConstant) for operation in initial)
-    assert sorted(operation.target for operation in initial) == list(range(source.num_variables))
-    extra = source.operations[source.num_variables :]
-    assert 1 <= len(extra) <= 1 + (seed * 3) % 60
-    for operation in extra:
-        if isinstance(operation, AssignIncrement):
-            assert 1 <= operation.delta < source.num_values
+# --- Derivation from periodic sources ----------------------------------------
 
 
-def test_pure_solvable_traces_have_no_constant_resets_after_initialisation() -> None:
-    source = generate_source(
-        complexity=Complexity.SOLVABLE,
-        num_variables=4,
-        num_values=100,
-        min_extra_assignments=50,
-        max_extra_assignments=50,
-        min_aperiodic_constants=0,
-        max_aperiodic_constants=0,
-        rng=random.Random(7),
-    )
-    extra = source.operations[4:]
-    assert len(extra) == 50
-    assert all(isinstance(operation, AssignIncrement) for operation in extra)
-    # Increment targets are balanced across variables.
-    counts = [sum(operation.target == variable for operation in extra) for variable in range(4)]
-    assert max(counts) - min(counts) <= 1
-
-
-def test_solvable_mixes_exactly_the_requested_constant_count() -> None:
-    source = generate_source(
-        complexity=Complexity.SOLVABLE,
-        num_variables=3,
-        num_values=100,
-        min_extra_assignments=40,
-        max_extra_assignments=40,
-        min_aperiodic_constants=7,
-        max_aperiodic_constants=7,
-        rng=random.Random(3),
-    )
-    extra = source.operations[3:]
-    assert sum(isinstance(operation, AssignConstant) for operation in extra) == 7
-    assert sum(isinstance(operation, AssignIncrement) for operation in extra) == 33
-
-
-def test_increment_deltas_are_sampled_within_the_configured_range() -> None:
-    source = generate_source(
-        complexity=Complexity.SOLVABLE,
-        num_variables=2,
-        num_values=100,
-        min_extra_assignments=200,
-        max_extra_assignments=200,
-        min_aperiodic_constants=0,
-        max_aperiodic_constants=0,
-        min_increment_delta=1,
-        max_increment_delta=9,
-        rng=random.Random(11),
-    )
-    deltas = {operation.delta for operation in source.operations if isinstance(operation, AssignIncrement)}
-    assert deltas <= set(range(1, 10))
-    assert len(deltas) > 1
-    with pytest.raises(ValueError, match="smaller than num_values"):
-        generate_source(
-            complexity=Complexity.SOLVABLE,
-            num_variables=2,
-            num_values=10,
-            max_extra_assignments=4,
-            max_increment_delta=10,
-            rng=random.Random(0),
-        )
-
-
-def test_derived_families_from_a_solvable_source() -> None:
-    assert derived_families(Complexity.SOLVABLE) == (
-        Complexity.R_TRIVIAL,
-        Complexity.APERIODIC,
-        Complexity.SOLVABLE,
-    )
-    assert derived_families(Complexity.PERIODIC) == (
-        Complexity.R_TRIVIAL,
-        Complexity.APERIODIC,
-        Complexity.PERIODIC,
-    )
-    with pytest.raises(ValueError, match="not a source family"):
-        derived_families(Complexity.APERIODIC)
-
-
-@pytest.mark.parametrize("seed", range(20))
-def test_solvable_derivations_resolve_increments_and_preserve_alignment(seed: int) -> None:
-    source = _solvable(seed, num_variables=1 + seed % 5, num_values=3 + seed % 9)
-    r_trivial, aperiodic, solvable = derive_variants(source)
-    assert solvable is source
-    assert (r_trivial, aperiodic) == (
-        derive_instance(source, complexity=Complexity.R_TRIVIAL),
-        derive_instance(source, complexity=Complexity.APERIODIC),
-    )
-    assert aperiodic.complexity is Complexity.APERIODIC
-    assert aperiodic.final_state == source.final_state
-    assert r_trivial.complexity is Complexity.R_TRIVIAL
-    for variant in (r_trivial, aperiodic):
-        assert variant.query == source.query
-        assert variant.temporary_variable is None
-        assert len(variant.operations) == len(source.operations)
-        assert all(isinstance(operation, AssignConstant) for operation in variant.operations)
-        assert tuple(operation.target for operation in variant.operations) == tuple(
-            operation.target for operation in source.operations
-        )
-        assert variant.final_state == evaluate(
-            num_variables=variant.num_variables,
-            num_values=variant.num_values,
-            operations=variant.operations,
-        )
-    # Aperiodic literals reproduce the running solvable state step by step.
-    state: dict[int, int] = {}
-    for operation, literal in zip(source.operations, aperiodic.operations, strict=True):
-        assert isinstance(literal, AssignConstant)
-        if isinstance(operation, AssignConstant):
-            expected = operation.value
-        else:
-            assert isinstance(operation, AssignIncrement)
-            expected = (state[operation.target] + operation.delta) % source.num_values
-        assert literal.value == expected
-        state[operation.target] = expected
-
-
-def test_solvable_cannot_be_derived_from_a_periodic_source_and_vice_versa() -> None:
-    periodic = generate_instance(
+def test_solvable_rewrites_each_swap_copy_as_a_self_increment() -> None:
+    # a=2, b=5, TMP=7; then swap(a, b): TMP <- a; a <- b; b <- TMP.
+    source = StateTrackingInstance.create(
         complexity=Complexity.PERIODIC,
         num_variables=2,
-        num_values=5,
-        max_extra_assignments=6,
-        rng=random.Random(0),
+        num_values=10,
+        operations=(
+            AssignConstant(0, 2),
+            AssignConstant(1, 5),
+            AssignConstant(2, 7),
+            AssignVariable(2, 0),
+            AssignVariable(0, 1),
+            AssignVariable(1, 2),
+            AssignConstant(0, 9),
+        ),
+        query=(0, 1, 2),
+        final_state=(9, 2, 2),
+        temporary_variable=2,
     )
-    with pytest.raises(ValueError, match="cannot derive 'solvable'"):
-        derive_instance(periodic, complexity=Complexity.SOLVABLE)
-    solvable = _solvable(0)
-    with pytest.raises(ValueError, match="cannot derive 'periodic'"):
-        derive_instance(solvable, complexity=Complexity.PERIODIC)
-    with pytest.raises(ValueError, match="not a source family"):
-        derive_variants(derive_instance(solvable, complexity=Complexity.APERIODIC))
+
+    solvable = derive_instance(source, complexity=Complexity.SOLVABLE)
+
+    assert solvable.operations == (
+        AssignConstant(0, 2),
+        AssignConstant(1, 5),
+        AssignConstant(2, 7),
+        AssignIncrement(2, 5),  # TMP: 7 -> 2
+        AssignIncrement(0, 3),  # a: 2 -> 5
+        AssignIncrement(1, 7),  # b: 5 -> 2 (wraps)
+        AssignConstant(0, 9),
+    )
+    assert solvable.final_state == source.final_state
+    assert solvable.temporary_variable == source.temporary_variable
+    assert solvable.query == source.query
+    # The solvable and aperiodic rewrites write the same value at every step.
+    aperiodic = derive_instance(source, complexity=Complexity.APERIODIC)
+    assert _trajectory(solvable) == _trajectory(aperiodic) == _trajectory(source)
 
 
-def test_generate_instance_routes_solvable_requests_to_a_solvable_source() -> None:
-    instance = _solvable(5)
-    assert instance.complexity is Complexity.SOLVABLE
-    aperiodic = generate_instance(
-        complexity=Complexity.APERIODIC,
-        source_complexity=Complexity.SOLVABLE,
+def test_copies_that_leave_their_target_unchanged_become_identity_increments() -> None:
+    source = StateTrackingInstance.create(
+        complexity=Complexity.PERIODIC,
+        num_variables=2,
+        num_values=10,
+        operations=(AssignConstant(0, 4), AssignConstant(1, 4), AssignVariable(0, 1)),
+        query=(0, 1),
+        final_state=(4, 4),
+    )
+    solvable = derive_instance(source, complexity=Complexity.SOLVABLE)
+    assert solvable.operations[-1] == AssignIncrement(0, 0)
+    assert evaluate(
+        num_variables=2, num_values=10, operations=solvable.operations
+    ) == source.final_state
+
+
+@pytest.mark.parametrize("seed", range(40))
+def test_solvable_derivation_tracks_the_periodic_state_exactly(seed: int) -> None:
+    source = _periodic(
+        seed,
+        num_variables=2 + seed % 7,
+        num_values=3 + seed % 98,
+        min_aperiodic_constants=seed % 5,
+        max_aperiodic_constants=seed % 5,
+    )
+    solvable = derive_instance(source, complexity=Complexity.SOLVABLE)
+
+    assert solvable.complexity is Complexity.SOLVABLE
+    assert len(solvable.operations) == len(source.operations)
+    assert _trajectory(solvable) == _trajectory(source)
+    assert solvable.final_state == source.final_state == evaluate(
+        num_variables=solvable.num_registers,
+        num_values=solvable.num_values,
+        operations=solvable.operations,
+    )
+    for original, rewritten in zip(source.operations, solvable.operations, strict=True):
+        assert rewritten.target == original.target
+        if isinstance(original, AssignConstant):
+            assert rewritten == original
+        else:
+            assert isinstance(rewritten, AssignIncrement)
+            assert 0 <= rewritten.delta < source.num_values
+    # Registers never read one another, so no copy survives.
+    assert not any(isinstance(operation, AssignVariable) for operation in solvable.operations)
+
+
+def test_derive_variants_returns_requested_families_in_order() -> None:
+    source = _periodic(3)
+    everything = derive_variants(source)
+    assert tuple(instance.complexity for instance in everything) == DERIVED_FAMILIES
+    assert everything[-1] is source
+    assert derive_variants(source, families=(Complexity.SOLVABLE, Complexity.R_TRIVIAL)) == (
+        everything[2],
+        everything[0],
+    )
+    assert everything == tuple(
+        derive_instance(source, complexity=complexity) for complexity in DERIVED_FAMILIES
+    )
+    assert generate_instance(
+        complexity=Complexity.SOLVABLE,
         num_variables=3,
         num_values=10,
-        min_extra_assignments=1,
-        max_extra_assignments=30,
-        rng=random.Random(5),
-    )
-    # Same seed, same source, different derivation.
-    assert aperiodic == derive_instance(instance, complexity=Complexity.APERIODIC)
+        min_extra_assignments=3,
+        max_extra_assignments=40,
+        rng=random.Random(3),
+    ) == everything[2]
+
+
+def test_only_periodic_sources_can_be_derived() -> None:
+    solvable = derive_instance(_periodic(4), complexity=Complexity.SOLVABLE)
+    with pytest.raises(ValueError, match="periodic source"):
+        derive_instance(solvable, complexity=Complexity.APERIODIC)
 
 
 def test_increments_extend_dependency_chains_and_pass_sensitivity_through() -> None:
@@ -353,78 +309,222 @@ def test_formatters_without_an_increment_template_reject_increment_traces() -> N
         render_instance(instance, formatter, rng=random.Random(0))
 
 
-def _write_experiment(tmp_path: Path, **overrides: object) -> Path:
-    source = yaml.safe_load((ROOT / "configs/experiments/solvable_test.yaml").read_text(encoding="utf-8"))
-    source["dataset"]["output_dir"] = str(tmp_path / "output")
-    source["splits"] = {"test": {"samples_per_condition": 2}}
-    source["generation"]["conditions"][0]["extra_assignments"] = {"min": 2, "max": 6}
-    source["generation"]["conditions"][0]["num_variables"] = [1, 3]
-    # Let the condition use whichever formatters the test supplies.
-    source["generation"]["conditions"][0].pop("formatters", None)
-    source["formatters"] = [{"config": str(MODULAR_FORMATTER)}]
-    for key, value in overrides.items():
-        section, _, field = key.partition("__")
-        if field:
-            source[section][field] = value
-        else:
-            source[section] = value
-    path = tmp_path / "experiment.yaml"
-    path.write_text(yaml.safe_dump(source, sort_keys=False), encoding="utf-8")
+# --- Experiments ---------------------------------------------------------------
+
+
+def _write_experiment(
+    tmp_path: Path,
+    name: str,
+    *,
+    families: list[str] | None,
+    formatter: Path = MODULAR_FORMATTER,
+    disjoint: bool = True,
+    train_families: list[str] | None = None,
+) -> Path:
+    """Write a tiny two-split experiment whose sources collide often across splits.
+
+    Two variables over three values with exactly one swap and no constant resets
+    leave few distinct traces, so train keeps resampling sources seen in test.
+    """
+
+    generation: dict[str, Any] = {
+        "aperiodic_constants": {"min": 0, "max": 0},
+        "conditions": [
+            {
+                "complexity": "periodic",
+                "num_variables": [2],
+                "num_values": 3,
+                "extra_assignments": {"min": 3, "max": 3},
+            }
+        ],
+    }
+    if families is not None:
+        generation["families"] = families
+    experiment = {
+        "schema_version": 1,
+        "dataset": {"name": "linked", "seed": 5, "output_dir": str(tmp_path / name)},
+        "splits": {
+            "test": {"samples_per_condition": 200},
+            "train": {
+                "samples_per_condition": 12,
+                **({"disjoint_from": ["test"]} if disjoint else {}),
+                **({"families": train_families} if train_families is not None else {}),
+            },
+        },
+        "generation": generation,
+        "formatters": [{"config": str(formatter)}],
+        "output": {
+            "minimal_splits": ["train"],
+            "omit_canonical_splits": ["train"],
+            "multiple_choice": {"num_distractors": 4, "shuffle_choices": True},
+        },
+    }
+    path = tmp_path / f"{name}.yaml"
+    path.write_text(yaml.safe_dump(experiment, sort_keys=False), encoding="utf-8")
     return path
 
 
-def test_solvable_experiment_loads_and_builds_linked_families(tmp_path: Path) -> None:
+def _sources(root: Path, config: str, split: str) -> dict[str, str]:
+    from state_bench.io import read_jsonl
+
+    rows = read_jsonl(root / "rendered" / config / f"{split}.jsonl")
+    return {row["source_example_id"]: row["source_instance_id"] for row in rows}
+
+
+def test_a_solvable_only_build_regenerates_the_periodic_builds_sources(tmp_path: Path) -> None:
     from state_bench.io import build_dataset, read_jsonl
+
+    periodic_root = build_dataset(
+        load_experiment(
+            _write_experiment(tmp_path, "periodic", families=["r-trivial", "aperiodic", "periodic"])
+        ),
+        workers=1,
+    )
+    solvable_loaded = load_experiment(_write_experiment(tmp_path, "solvable", families=["solvable"]))
+    solvable_root = build_dataset(solvable_loaded, workers=1)
+    unconstrained_root = build_dataset(
+        load_experiment(
+            _write_experiment(tmp_path, "unconstrained", families=["periodic"], disjoint=False)
+        ),
+        workers=1,
+    )
+
+    assert sorted(path.name for path in (solvable_root / "rendered").iterdir()) == [
+        "integer-code-modular--solvable"
+    ]
+    for split in ("test", "train"):
+        periodic = _sources(periodic_root, "integer-code-modular--periodic", split)
+        assert _sources(periodic_root, "integer-code-modular--aperiodic", split) == periodic
+        assert _sources(solvable_root, "integer-code-modular--solvable", split) == periodic
+    # The fixture really exercises disjointness resampling, which the
+    # solvable-only build must reproduce although it renders no periodic rows.
+    assert _sources(unconstrained_root, "integer-code-modular--periodic", "train") != _sources(
+        periodic_root, "integer-code-modular--periodic", "train"
+    )
+    # Persisted test IDs cover every family, emitted or not.
+    periodic_ids = set((periodic_root / "semantics/test.ids").read_text().split())
+    solvable_ids = set((solvable_root / "semantics/test.ids").read_text().split())
+    assert solvable_ids == periodic_ids
+
+    canonical = read_jsonl(solvable_root / "canonical/test.jsonl")
+    assert {row["complexity"] for row in canonical} == {"solvable"}
+    for row in read_jsonl(solvable_root / "rendered/integer-code-modular--solvable/test.jsonl"):
+        assert "mod 3;" in row["prefix"]
+        assert row["temporary_variable"] == "TMP"
+        assert row["completion"] in row["choices"]
+
+
+def test_splits_can_emit_a_subset_of_the_generated_families(tmp_path: Path) -> None:
+    from state_bench.io import build_dataset
+
+    periodic_root = build_dataset(
+        load_experiment(
+            _write_experiment(tmp_path, "periodic", families=["r-trivial", "aperiodic", "periodic"])
+        ),
+        workers=1,
+    )
+    loaded = load_experiment(
+        _write_experiment(tmp_path, "split", families=None, train_families=["solvable"])
+    )
+    assert split_families(loaded.spec, "test") == DERIVED_FAMILIES
+    assert split_families(loaded.spec, "train") == (Complexity.SOLVABLE,)
+    root = build_dataset(loaded, workers=1)
+
+    rendered = {
+        (path.parent.name, path.stem) for path in (root / "rendered").glob("*/*.jsonl")
+    }
+    assert rendered == {
+        *(("integer-code-modular--" + family.value, "test") for family in DERIVED_FAMILIES),
+        ("integer-code-modular--solvable", "train"),
+    }
+    assert _sources(root, "integer-code-modular--solvable", "train") == _sources(
+        periodic_root, "integer-code-modular--periodic", "train"
+    )
+
+    with pytest.raises(ValueError, match="missing from generation.families"):
+        load_experiment(
+            _write_experiment(
+                tmp_path, "bad", families=["periodic"], train_families=["solvable"]
+            )
+        )
+
+
+def test_experiments_emit_every_family_by_default(tmp_path: Path) -> None:
     from state_bench.preview import available_config_names, generate_preview
 
-    loaded = load_experiment(_write_experiment(tmp_path))
+    loaded = load_experiment(_write_experiment(tmp_path, "all", families=None))
+    assert loaded.spec.generation.emitted_families() == DERIVED_FAMILIES
     assert available_config_names(loaded) == (
         "integer-code-modular--aperiodic",
+        "integer-code-modular--periodic",
         "integer-code-modular--r-trivial",
         "integer-code-modular--solvable",
     )
     preview = generate_preview(loaded, config_name="integer-code-modular--solvable")
     assert preview.instance.complexity is Complexity.SOLVABLE
-    assert "mod 100" in preview.rendered.prefix
-
-    root = build_dataset(loaded, workers=1)
-    canonical = read_jsonl(root / "canonical/test.jsonl")
-    assert sorted({row["complexity"] for row in canonical}) == ["aperiodic", "r-trivial", "solvable"]
-    by_source: dict[str, set[str]] = {}
-    for row in canonical:
-        by_source.setdefault(row["source_example_id"], set()).add(row["complexity"])
-    assert all(families == {"aperiodic", "r-trivial", "solvable"} for families in by_source.values())
-    solvable_rows = read_jsonl(root / "rendered/integer-code-modular--solvable/test.jsonl")
-    assert len(solvable_rows) == 4
-    for row in solvable_rows:
-        assert row["complexity"] == "solvable"
-        assert row["temporary_variable"] is None
-        assert any(operation["op"] == "increment" for operation in row["operations"])
-        assert row["completion"] in row["choices"]
-        assert len(set(row["choices"])) == 5
+    assert "mod 3;" in preview.rendered.prefix
 
 
-def test_solvable_conditions_require_a_zero_based_increment_formatter(tmp_path: Path) -> None:
-    path = _write_experiment(
-        tmp_path,
-        formatters=[{"config": str(ROOT / "configs/formats/integer-code.yaml")}],
-    )
+def test_the_solvable_family_requires_a_zero_based_increment_formatter(tmp_path: Path) -> None:
+    integer_code = ROOT / "configs/formats/integer-code.yaml"
     with pytest.raises(ValueError, match="assign_increment"):
-        load_experiment(path)
+        load_experiment(_write_experiment(tmp_path, "one", families=None, formatter=integer_code))
+    load_experiment(
+        _write_experiment(
+            tmp_path, "two", families=["r-trivial", "aperiodic", "periodic"], formatter=integer_code
+        )
+    )
 
     one_based = yaml.safe_load(MODULAR_FORMATTER.read_text(encoding="utf-8"))
     one_based["vocabulary"]["values"] = [str(value) for value in range(1, 101)]
     one_based_path = tmp_path / "one-based.yaml"
     one_based_path.write_text(yaml.safe_dump(one_based), encoding="utf-8")
-    path = _write_experiment(tmp_path, formatters=[{"config": str(one_based_path)}])
-    with pytest.raises(ValueError, match='values "0" through "99"'):
-        load_experiment(path)
+    with pytest.raises(ValueError, match='values "0" through "2"'):
+        load_experiment(_write_experiment(tmp_path, "three", families=None, formatter=one_based_path))
 
 
-def test_experiments_reject_delta_ranges_that_reach_the_modulus(tmp_path: Path) -> None:
-    path = _write_experiment(tmp_path, generation__increment_deltas={"min": 1, "max": 100})
-    with pytest.raises(ValueError, match="increment_deltas.max"):
+def test_conditions_describe_periodic_sources_only(tmp_path: Path) -> None:
+    path = _write_experiment(tmp_path, "bad", families=None)
+    experiment = yaml.safe_load(path.read_text(encoding="utf-8"))
+    experiment["generation"]["conditions"][0]["complexity"] = "solvable"
+    path.write_text(yaml.safe_dump(experiment), encoding="utf-8")
+    with pytest.raises(ValueError, match="periodic source traces"):
         load_experiment(path)
+
+    for families in ([], ["solvable", "solvable"]):
+        path = _write_experiment(tmp_path, "bad", families=families)
+        with pytest.raises(ValueError, match="families"):
+            load_experiment(path)
+
+
+@pytest.mark.parametrize(
+    ("solvable_name", "periodic_name"),
+    [("solvable.yaml", "default.yaml"), ("solvable_test.yaml", "periodic_test_mixed.yaml")],
+)
+def test_solvable_experiments_stay_in_lockstep_with_their_periodic_twins(
+    solvable_name: str, periodic_name: str
+) -> None:
+    """Everything that determines a source must match, or rows stop joining."""
+
+    def normalized(name: str) -> dict[str, Any]:
+        experiment = yaml.safe_load((EXPERIMENTS / name).read_text(encoding="utf-8"))
+        experiment["dataset"].pop("output_dir")
+        experiment["generation"].pop("families")
+        experiment.pop("formatters")
+        for split in experiment["splits"].values():
+            split.pop("formatters", None)
+            split.pop("families", None)
+        for condition in experiment["generation"]["conditions"]:
+            condition.pop("formatters", None)
+        experiment.get("huggingface", {}).get("repository", {}).pop("repo_id", None)
+        return experiment
+
+    assert normalized(solvable_name) == normalized(periodic_name)
+    solvable = load_experiment(EXPERIMENTS / solvable_name)
+    assert solvable.spec.generation.emitted_families() == DERIVED_FAMILIES
+    assert [formatter.name for formatter in solvable.formatters] == ["integer-code-modular"]
+    if "train" in solvable.spec.splits:
+        assert split_families(solvable.spec, "train") == (Complexity.SOLVABLE,)
 
 
 # --- Algebraic sanity check ---------------------------------------------------

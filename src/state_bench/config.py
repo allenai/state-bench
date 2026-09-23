@@ -11,7 +11,7 @@ from typing import Literal, cast
 import yaml
 from pydantic import BaseModel, ConfigDict, Field, PositiveInt, model_validator
 
-from state_bench.generation import SOURCE_COMPLEXITIES
+from state_bench.generation import DERIVED_FAMILIES
 from state_bench.model import Complexity, QueryMode
 
 _FORMATTER_CONFIG_HASH_CACHE: dict[int, tuple[object, str]] = {}
@@ -75,28 +75,6 @@ class AperiodicConstantsSpec(StrictModel):
         return self
 
 
-class IncrementDeltaSpec(StrictModel):
-    """Inclusive range of ``delta`` values for solvable-source increments.
-
-    Each ``x <- (x + delta) mod num_values`` update samples its delta uniformly
-    from [min, max]. ``max: null`` means ``num_values - 1``. Any range generates
-    the full cyclic group of order ``num_values``; narrower ranges only reduce
-    the arithmetic each update demands.
-    """
-
-    min: int = Field(default=1, ge=1)
-    max: int | None = Field(default=None, ge=1)
-
-    @model_validator(mode="after")
-    def ordered(self) -> IncrementDeltaSpec:
-        if self.max is not None and self.max < self.min:
-            raise ValueError("max must be greater than or equal to min")
-        return self
-
-    def resolve_max(self, num_values: int) -> int:
-        return num_values - 1 if self.max is None else self.max
-
-
 FillerDistraction = Literal["easy", "medium", "hard"]
 
 
@@ -155,13 +133,19 @@ class GenerationSpec(StrictModel):
     require_strict_witness: bool = True
     distinct_initial_values: bool = False
     aperiodic_constants: AperiodicConstantsSpec = AperiodicConstantsSpec(min=1, max=64)
-    increment_deltas: IncrementDeltaSpec = IncrementDeltaSpec()
+    # Families emitted from every periodic source. Omitted families are still
+    # derived for train/test disjointness checks but are not rendered.
+    families: list[Complexity] = list(DERIVED_FAMILIES)
     conditions: list[ConditionSpec]
 
     @model_validator(mode="after")
     def validate_conditions(self) -> GenerationSpec:
         if not self.conditions:
             raise ValueError("conditions must not be empty")
+        if not self.families:
+            raise ValueError("families must not be empty")
+        if len(set(self.families)) != len(self.families):
+            raise ValueError("families must not contain duplicates")
         seen: set[
             tuple[
                 Complexity,
@@ -174,10 +158,11 @@ class GenerationSpec(StrictModel):
             ]
         ] = set()
         for condition in self.conditions:
-            if condition.complexity not in SOURCE_COMPLEXITIES:
+            if condition.complexity is not Complexity.PERIODIC:
                 raise ValueError(
-                    "generation conditions must describe periodic or solvable source traces; "
-                    "aperiodic and r-trivial traces are derived automatically"
+                    "generation conditions must describe periodic source traces; the "
+                    "r-trivial, aperiodic, and solvable families are derived from them "
+                    "(choose which to emit with generation.families)"
                 )
             for num_variables in condition.num_variables:
                 key = (
@@ -194,35 +179,18 @@ class GenerationSpec(StrictModel):
                 seen.add(key)
                 if self.distinct_initial_values and condition.num_values < num_variables:
                     raise ValueError("distinct initial values require num_values >= num_variables")
-                if (
-                    self.require_strict_witness
-                    and condition.extra_assignments.min < 1
-                ):
-                    raise ValueError(
-                        f"strict {condition.complexity.value} source conditions need at least "
-                        "one extra assignment"
-                    )
-                if condition.complexity is Complexity.PERIODIC:
-                    if (
-                        self.require_strict_witness
-                        and (num_variables < 2 or condition.num_values < 2)
-                    ):
-                        raise ValueError(
-                            "strict periodic conditions need at least two variables and values"
-                        )
-                    if condition.extra_assignments.max < 3:
-                        raise ValueError(
-                            "swap-periodic sampling requires room for three extra assignments"
-                        )
-                else:
-                    if condition.num_values < 2:
-                        raise ValueError("solvable conditions need at least two values")
-                    if self.increment_deltas.resolve_max(condition.num_values) >= condition.num_values:
-                        raise ValueError(
-                            "increment_deltas.max must be smaller than every solvable condition's "
-                            "num_values"
-                        )
+                if self.require_strict_witness and condition.extra_assignments.min < 1:
+                    raise ValueError("strict source conditions need at least one extra assignment")
+                if self.require_strict_witness and (num_variables < 2 or condition.num_values < 2):
+                    raise ValueError("strict periodic conditions need at least two variables and values")
+                if condition.extra_assignments.max < 3:
+                    raise ValueError("swap-periodic sampling requires room for three extra assignments")
         return self
+
+    def emitted_families(self) -> tuple[Complexity, ...]:
+        """Return the emitted families in canonical ``DERIVED_FAMILIES`` order."""
+
+        return tuple(family for family in DERIVED_FAMILIES if family in self.families)
 
 
 class DatasetSpec(StrictModel):
@@ -234,10 +202,17 @@ class DatasetSpec(StrictModel):
 class SplitSpec(StrictModel):
     samples_per_condition: int = Field(ge=0)
     formatters: list[str] | None = None
+    # Restricts generation.families for this split; omitted means all of them.
+    families: list[Complexity] | None = None
     disjoint_from: list[str] = []
 
     @model_validator(mode="after")
     def validate_scope(self) -> SplitSpec:
+        if self.families is not None:
+            if not self.families:
+                raise ValueError("split families must not be empty")
+            if len(set(self.families)) != len(self.families):
+                raise ValueError("split families must not contain duplicates")
         if self.formatters is not None:
             if not self.formatters:
                 raise ValueError("split formatters must not be empty")
@@ -383,6 +358,13 @@ class ExperimentSpec(StrictModel):
                     f"split {split_name!r} must appear after its disjoint_from splits: {sorted(unavailable)}"
                 )
             preceding_splits.add(split_name)
+            if split.families is not None:
+                unknown_families = set(split.families) - set(self.generation.families)
+                if unknown_families:
+                    raise ValueError(
+                        f"split {split_name!r} emits families missing from generation.families: "
+                        f"{sorted(family.value for family in unknown_families)}"
+                    )
         for condition in self.generation.conditions:
             unknown = set(condition.splits or self.splits) - self.splits.keys()
             if unknown:
@@ -632,7 +614,7 @@ def _validate_condition_formatters(
         unknown = selected - available.keys()
         if unknown:
             raise ValueError(f"condition references unknown formatters: {sorted(unknown)}")
-        if condition.complexity is Complexity.SOLVABLE:
+        if Complexity.SOLVABLE in experiment.generation.families:
             for name in sorted(selected):
                 _validate_increment_formatter(available[name], num_values=condition.num_values)
         if any(proportion > 0 for proportion in condition.filler.proportions):
@@ -655,19 +637,20 @@ def _validate_increment_formatter(formatter: FormatterSpec, *, num_values: int) 
 
     if formatter.templates.assign_increment is None:
         raise ValueError(
-            f"formatter {formatter.name!r} has no assign_increment template required by a "
-            "solvable condition"
+            f"formatter {formatter.name!r} has no assign_increment template, which the "
+            "solvable family requires; drop solvable from generation.families or restrict "
+            "the condition's formatters"
         )
     if formatter.vocabulary.value_selection != "prefix":
         raise ValueError(
             f"formatter {formatter.name!r} must use a fixed zero-based numeric value vocabulary "
-            "to render solvable conditions"
+            "to render the solvable family"
         )
     values = formatter.vocabulary.values[:num_values]
     if len(values) < num_values or any(value != str(index) for index, value in enumerate(values)):
         raise ValueError(
             f"formatter {formatter.name!r} must define values \"0\" through \"{num_values - 1}\" in "
-            "order so modular increments render truthfully for solvable conditions"
+            "order so modular increments render truthfully for the solvable family"
         )
 
 
@@ -688,6 +671,14 @@ def condition_uses_formatter(condition: ConditionSpec, formatter_name: str) -> b
 
 def condition_uses_split(condition: ConditionSpec, split_name: str) -> bool:
     return condition.splits is None or split_name in condition.splits
+
+
+def split_families(experiment: ExperimentSpec, split_name: str) -> tuple[Complexity, ...]:
+    """Return the families a split emits, in canonical ``DERIVED_FAMILIES`` order."""
+
+    families = experiment.generation.emitted_families()
+    selected = experiment.splits[split_name].families
+    return families if selected is None else tuple(family for family in families if family in selected)
 
 
 def split_uses_formatter(split: SplitSpec, formatter_name: str) -> bool:

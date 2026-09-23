@@ -31,6 +31,9 @@ generation:
   # sampled count of constant resets sweeps sensitivity coverage across its
   # full range independently of trace length.
   aperiodic_constants: {min: 1, max: 64}
+  # Solvable rows need the zero-based integer-code-modular formatter; they are
+  # emitted from these same sources by solvable.yaml.
+  families: [r-trivial, aperiodic, periodic]
   conditions:
     # Padding is scheduled on short sources, then shared by all three derived
     # complexity classes and every selected formatter.

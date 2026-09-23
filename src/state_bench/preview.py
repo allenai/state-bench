@@ -15,7 +15,7 @@ from state_bench.config import (
     filler_variants,
 )
 from state_bench.distractors import generate_incorrect_states
-from state_bench.generation import derive_instance, derived_families, generate_source
+from state_bench.generation import derive_instance, generate_periodic_source
 from state_bench.io import derive_seed, hub_config_name
 from state_bench.model import Complexity, StateTrackingInstance
 from state_bench.rendering import RenderedExample, render_instance
@@ -59,7 +59,7 @@ def available_config_names(loaded: LoadedExperiment) -> tuple[str, ...]:
         )
         for formatter in loaded.formatters
         for condition in loaded.spec.generation.conditions
-        for complexity in derived_families(condition.complexity)
+        for complexity in loaded.spec.generation.emitted_families()
         if condition_uses_formatter(condition, formatter.name)
     }
     return tuple(sorted(names))
@@ -192,13 +192,11 @@ def _resolve_config(
 ) -> tuple[FormatterSpec, list[ConditionSpec], Complexity]:
     matches: list[tuple[FormatterSpec, list[ConditionSpec], Complexity]] = []
     for formatter in loaded.formatters:
-        for complexity in Complexity:
-            # Only conditions whose source can derive this family are candidates.
+        for complexity in loaded.spec.generation.emitted_families():
             conditions = [
                 condition
                 for condition in loaded.spec.generation.conditions
                 if condition_uses_formatter(condition, formatter.name)
-                and complexity in derived_families(condition.complexity)
             ]
             name = hub_config_name(
                 loaded.spec.huggingface.config_naming,
@@ -226,8 +224,7 @@ def _generate(
     complexity: Complexity,
 ) -> StateTrackingInstance:
     generation = loaded.spec.generation
-    source = generate_source(
-        complexity=condition.complexity,
+    source = generate_periodic_source(
         num_variables=num_variables,
         num_values=condition.num_values,
         min_extra_assignments=plan_item.min_extra_assignments,
@@ -237,8 +234,6 @@ def _generate(
         require_strict_witness=generation.require_strict_witness,
         min_aperiodic_constants=generation.aperiodic_constants.min,
         max_aperiodic_constants=generation.aperiodic_constants.max,
-        min_increment_delta=generation.increment_deltas.min,
-        max_increment_delta=generation.increment_deltas.resolve_max(condition.num_values),
         rng=random.Random(seed),
     )
     return derive_instance(source, complexity=complexity)

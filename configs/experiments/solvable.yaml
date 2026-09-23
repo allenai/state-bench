@@ -1,17 +1,28 @@
 schema_version: 1
 
-# Solvable-source twin of default.yaml: identical splits, sample budgets,
-# variable counts, depth schedules, padding, and Hub settings, but every source
-# trace is `solvable` (constants + `x <- (x + d) mod 100`, no scratch register)
-# and only the zero-based integer-code-modular formatter is rendered. Each
-# source emits linked solvable, aperiodic, and r-trivial rows, so the derived
-# configs double as same-vocabulary controls. Build with
-#   PERIODIC_CONFIG=integer-code-modular--solvable bash scripts/build_train.sh --config configs/experiments/solvable.yaml
+# The solvable family of default.yaml's own periodic sources. Everything that
+# determines a source -- dataset name and seed, splits and budgets, condition
+# order, schedules, padding -- is identical to default.yaml, so this build
+# regenerates exactly the periodic traces behind state-tracking-long-context-v1.
+# Each reference `a <- b` becomes `a <- (a + d) mod 100` with `d` chosen to land
+# on the value the copy writes. Rows join to the existing long-context-v1 rows
+# by source_example_id and source_instance_id. Keep this file in lockstep with
+# default.yaml (tests/test_solvable.py checks it).
+#
+# Train renders only the solvable rewrite; the periodic, aperiodic, and
+# r-trivial training data already exist in long-context-v1. Test renders all
+# four families in the zero-based modular vocabulary, so models trained on
+# solvable rows are evaluated on every class in the vocabulary they saw.
+#
+# Build test first (it regenerates default.yaml's test sources and persists the
+# IDs train must avoid), then train, then tokenize:
+#   PERIODIC_CONFIG=integer-code-modular--solvable bash scripts/build_train.sh \
+#     --config configs/experiments/solvable.yaml --skip-partition
 
 dataset:
-  name: state-tracking-solvable-v1
+  name: state-tracking-long-context-v1
   seed: 13
-  output_dir: ../../data/state-tracking-solvable-v1
+  output_dir: ../../data/state-tracking-solvable-v2
 
 splits:
   test:
@@ -29,20 +40,22 @@ splits:
     # is resampled to keep the splits sample-wise disjoint.
     samples_per_condition: 15400000
     formatters: [integer-code-modular]
+    families: [solvable]
     disjoint_from: [test]
 
 generation:
   query_mode: all
   require_strict_witness: true
   distinct_initial_values: false
-  # Solvable traces advance registers by modular increments; a log-uniformly
+  # Periodic traces mostly extend deep copy provenance chains; a log-uniformly
   # sampled count of constant resets sweeps sensitivity coverage across its
-  # full range independently of trace length, exactly as in default.yaml.
+  # full range independently of trace length.
   aperiodic_constants: {min: 1, max: 64}
+  families: [r-trivial, aperiodic, solvable, periodic]
   conditions:
     # Padding is scheduled on short sources, then shared by all three derived
     # complexity classes and every selected formatter.
-    - complexity: solvable
+    - complexity: periodic
       splits: [test]
       num_variables: [2, 4, 8, 16]
       num_values: 100
@@ -55,15 +68,15 @@ generation:
         distraction_levels: [easy, medium, hard]
     # Sequence-length sweeps stay unpadded so the largest traces remain
     # tractable; these rows are likewise emitted in all three classes.
-    - complexity: solvable
+    - complexity: periodic
       splits: [test]
       num_variables: [2, 4, 8, 16]
       num_values: 100
       extra_assignments:
         distribution: log-spaced
         min: 8
-        # Kept equal to default.yaml so the depth buckets line up across the
-        # periodic and solvable test sweeps.
+        # RULER is the most token-dense formatter at about 15.2 tokens per
+        # assignment; 64k assignments therefore stays just below 1m tokens.
         max: 64000
         growth_factor: 2.0
         sample_decay: 1.0
@@ -72,13 +85,14 @@ generation:
     # Training uses a log-spaced short-to-medium sweep with the unpadded
     # baseline and only 25% simple dot/comment padding. Its ×2 spacing matches
     # the test sweep, while the 256-assignment cap preserves a test-only tail.
-    - complexity: solvable
+    - complexity: periodic
       splits: [train]
       formatters: [integer-code-modular]
       num_variables: [2, 4, 8, 16]
       num_values: 100
       extra_assignments:
         distribution: log-spaced
+        # A floor of 8 still fits at least one complete TMP-based swap.
         min: 8
         max: 256
         growth_factor: 2.0
@@ -91,7 +105,7 @@ generation:
     # Add padded integer-code examples at every assignment depth without
     # changing any of the existing test rows above. A moderate 25% padding
     # share keeps even the longest hard-padding prompts tractable.
-    - complexity: solvable
+    - complexity: periodic
       splits: [test]
       formatters: [integer-code-modular]
       num_variables: [2, 4, 8, 16]

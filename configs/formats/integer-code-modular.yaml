@@ -3,9 +3,9 @@ name: integer-code-modular
 
 # Identical to integer-code except that values are zero-based ("0".."99"), so
 # `x <- (x + d) mod 100` renders truthfully: the surface value of index i is
-# literally i. Use this formatter whenever a `solvable` condition is present;
-# render the other families with it too when the four classes should share a
-# value vocabulary.
+# literally i. Use this formatter whenever `solvable` is among an experiment's
+# generation.families; render the other families with it too when the four
+# classes should share a value vocabulary.
 vocabulary:
   variables: [a, b, c, d, e, f, g, h, i, j, k, l, m, n, o, p]
   temporary_variable: TMP

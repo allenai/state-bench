@@ -78,7 +78,7 @@ def evaluate(*, num_variables: int, num_values: int, operations: Sequence[Operat
                 raise ValueError(f"operation {index} reads uninitialized variable {operation.source}")
             state[operation.target] = source_value
         elif isinstance(operation, AssignIncrement):
-            if not 0 < operation.delta < num_values:
+            if not 0 <= operation.delta < num_values:
                 raise ValueError(f"operation {index} has out-of-range delta {operation.delta}")
             current = state[operation.target]
             if current is None:

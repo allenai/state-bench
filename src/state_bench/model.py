@@ -14,9 +14,9 @@ class Complexity(StrEnum):
 
     Members are ordered from least to most expressive. ``SOLVABLE`` refines
     ``PERIODIC``: its transition monoid contains nontrivial groups, but every
-    group in its Krohn-Rhodes decomposition is solvable (in fact cyclic),
-    whereas swap-periodic traces on five or more variables realize the
-    non-solvable symmetric group.
+    group in its Krohn-Rhodes decomposition is solvable (each register only
+    ever translates itself in a cyclic group), whereas swap-periodic traces on
+    five or more variables realize the non-solvable symmetric group.
     """
 
     R_TRIVIAL = "r-trivial"
@@ -55,7 +55,9 @@ class AssignIncrement:
 
     Increments generate the cyclic group of order ``num_values`` on a single
     register and never mix registers, so traces built from constants and
-    increments have solvable (abelian) group complexity.
+    increments have solvable (abelian) group complexity. ``delta`` lies in
+    ``[0, num_values)``; zero is the identity, which the solvable derivation of
+    a periodic reference produces when the copy leaves its target unchanged.
     """
 
     target: int

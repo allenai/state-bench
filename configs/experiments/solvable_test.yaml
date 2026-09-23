@@ -1,29 +1,32 @@
 schema_version: 1
 
-# Solvable-source counterpart of periodic_test_mixed.yaml. Each source trace
-# advances variables with `x <- (x + d) mod 100` and mixes in a log-uniformly
-# sampled count of constant resets; linked aperiodic and r-trivial rows are
-# derived from the same trace. Only the zero-based integer-code formatter can
-# render modular increments truthfully.
+# periodic_test_mixed.yaml's own periodic sources, rendered in all four
+# families with the zero-based modular vocabulary that solvable rows require.
+# The dataset name, seed, and condition are identical, so every row joins to
+# its periodic_test_mixed counterparts by source_instance_id. Keep this file in
+# lockstep with periodic_test_mixed.yaml.
+
 dataset:
-  name: solvable-test-mixed
+  name: periodic-test-mixed
   seed: 23
   output_dir: ../../data/solvable-test-mixed
 
 splits:
   test:
-    # Match periodic_test_mixed: 32 examples in each of eleven depth buckets.
+    # Match the pure dataset exactly: 32 examples in each of eleven buckets.
     samples_per_condition: 352
 
 generation:
   query_mode: all
   require_strict_witness: true
   distinct_initial_values: false
+  # Each trace mixes in a log-uniformly sampled count of value resets. Coverage
+  # is governed by the count alone (~1.0 at 1 reset down to the ~0.2 floor by
+  # 64), so this sweeps sensitivity coverage uniformly in every length bucket.
   aperiodic_constants: {min: 1, max: 64}
-  # Deltas are sampled uniformly in [1, 99]; any range generates Z_100.
-  increment_deltas: {min: 1, max: null}
+  families: [r-trivial, aperiodic, solvable, periodic]
   conditions:
-    - complexity: solvable
+    - complexity: periodic
       splits: [test]
       formatters: [integer-code-modular]
       num_variables: [2, 4, 8, 16]

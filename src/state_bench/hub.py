@@ -703,10 +703,10 @@ retains the unstratified base splits.
 # {loaded.spec.dataset.name}
 
 Synthetic evaluations of state tracking across four algebraic families:
-`r-trivial`, `aperiodic`, `solvable`, and `periodic`. Solvable traces advance
-variables with modular increments (`x <- (x + d) mod n`), whose transition
-monoid contains only solvable (cyclic) groups; periodic traces permute variable
-contents via swaps.
+`r-trivial`, `aperiodic`, `solvable`, and `periodic`. Every family is derived
+from one swap-based periodic source trace: solvable rewrites each copy as a
+modular self-increment (`x <- (x + d) mod n`) landing on the copied value,
+aperiodic as the copied literal, and r-trivial as the target's first value.
 
 Available surface formatters: {formatter_names}.
 

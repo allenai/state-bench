@@ -18,6 +18,9 @@ generation:
   # is governed by the count alone (~1.0 at 1 reset down to the ~0.2 floor by
   # 64), so this sweeps sensitivity coverage uniformly in every length bucket.
   aperiodic_constants: {min: 1, max: 64}
+  # Solvable rows need the zero-based integer-code-modular formatter; they are
+  # emitted from these same sources by solvable_test.yaml.
+  families: [r-trivial, aperiodic, periodic]
   conditions:
     - complexity: periodic
       splits: [test]
