@@ -1,0 +1,63 @@
+schema_version: 1
+
+# A small paired sample of the two source families' *training* distributions,
+# for comparing their sensitivity-coverage histograms. Both conditions copy the
+# train condition of default.yaml / solvable.yaml (variable counts, 100 values,
+# the log-spaced 8..256 extra-assignment schedule, and 1..64 constant resets)
+# with a much smaller sample budget and no padding. Canonical rows carry
+# sensitivity_coverage; see notebooks/periodic_sensitivity_histograms.py.
+dataset:
+  name: train-sensitivity-sample
+  seed: 13
+  output_dir: ../../data/train-sensitivity-sample
+
+splits:
+  train:
+    # 2,000 sources per (condition, variable count): 8,000 traces per family.
+    samples_per_condition: 2000
+
+generation:
+  query_mode: all
+  require_strict_witness: true
+  distinct_initial_values: false
+  aperiodic_constants: {min: 1, max: 64}
+  increment_deltas: {min: 1, max: null}
+  conditions:
+    - complexity: periodic
+      formatters: [integer-code]
+      num_variables: [2, 4, 8, 16]
+      num_values: 100
+      extra_assignments:
+        distribution: log-spaced
+        min: 8
+        max: 256
+        growth_factor: 2.0
+        sample_decay: 1.0
+        jitter_fraction: 0.0
+        min_samples_per_bucket: 1
+    - complexity: solvable
+      formatters: [integer-code-modular]
+      num_variables: [2, 4, 8, 16]
+      num_values: 100
+      extra_assignments:
+        distribution: log-spaced
+        min: 8
+        max: 256
+        growth_factor: 2.0
+        sample_decay: 1.0
+        jitter_fraction: 0.0
+        min_samples_per_bucket: 1
+
+formatters:
+  - config: ../formats/integer-code.yaml
+  - config: ../formats/integer-code-modular.yaml
+
+output:
+  include_canonical_trace: false
+  include_final_state: true
+  track_unique_semantics: false
+  hash_files: false
+  shard_size: 100000
+  multiple_choice:
+    num_distractors: 4
+    shuffle_choices: true
