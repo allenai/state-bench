@@ -151,11 +151,19 @@ fi
 TOKENS_DEST="$DATASET_ROOT/rendered-tokenized"
 SENS_TOKENS_DEST="$DATASET_ROOT/rendered-sensitivity-tokenized"
 
-# Fail fast on tokenization-environment problems (missing extras, or a dolma
-# native extension compiled on a machine with an incompatible glibc) before
-# spending ~half an hour preparing documents.
+# Sync the tokenization environment exactly. `uv run --extra tokenization`
+# only adds packages, so packages from the conflicting hub/analysis extras (for
+# example a transformers that needs huggingface-hub>=1.0, left by build_test.sh)
+# would survive the huggingface-hub<1.0 downgrade and break dolma's imports.
+echo ">> Syncing the tokenization environment"
+uv sync --extra tokenization
+
+# Fail fast on tokenization-environment problems (missing extras, stale
+# packages, or a dolma native extension compiled on a machine with an
+# incompatible glibc) before spending ~half an hour preparing documents.
+# Import the tokenizer module itself: dolma imports transformers only there.
 echo ">> Checking the tokenization environment"
-if ! uv run --extra tokenization python -c "import huggingface_hub, dolma"; then
+if ! uv run --no-sync python -c "import huggingface_hub; from dolma.tokenizer import tokenize_in_parallel"; then
     cat >&2 <<'EOF'
 The tokenization environment is broken. If the error above mentions GLIBC,
 the dolma extension in .venv was compiled on a machine with a newer glibc
@@ -169,7 +177,7 @@ fi
 
 echo ">> Tokenizing train splits into $TOKENS_DEST"
 rm -rf "$TOKENS_DEST"
-uv run --extra tokenization scripts/tokenize_dataset.py "$DATASET_ROOT/rendered" \
+uv run --no-sync scripts/tokenize_dataset.py "$DATASET_ROOT/rendered" \
     --destination "$TOKENS_DEST" \
     --only-splits train
 
@@ -178,7 +186,7 @@ if [[ "$SKIP_PARTITION" -eq 1 ]]; then
 else
     echo ">> Tokenizing sensitivity buckets into $SENS_TOKENS_DEST"
     rm -rf "$SENS_TOKENS_DEST"
-    uv run --extra tokenization scripts/tokenize_dataset.py "$SENS_DIR" --destination "$SENS_TOKENS_DEST"
+    uv run --no-sync scripts/tokenize_dataset.py "$SENS_DIR" --destination "$SENS_TOKENS_DEST"
 
     echo ">> Merging bucket token directories into $TOKENS_DEST/tokens/"
     mv "$SENS_TOKENS_DEST/tokens/"* "$TOKENS_DEST/tokens/"
