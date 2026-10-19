@@ -43,11 +43,18 @@ The solvable family can only be rendered by a formatter that defines an
 `"1"`, ... in order, so that the rendered arithmetic is truthful.
 `configs/formats/integer-code-modular.yaml` is `integer-code` with a
 zero-based vocabulary (`"0".."99"` instead of `"1".."100"`) and the template
-`$target <- ($target + $delta) mod $modulus;`. Experiments whose formatters
-cannot render increments set `families: [r-trivial, aperiodic, periodic]`.
+`$target <- ($target + $delta) mod $modulus;`. `spreadsheet-cells-modular.yaml`
+makes the same change to `spreadsheet-cells`. Formatters without an
+`assign_increment` template (cube-painting, status-lights, people-in-rooms)
+skip the solvable family and still render the other three, but each condition
+needs at least one formatter that renders increments. Experiments with no such
+formatter set `families: [r-trivial, aperiodic, periodic]`.
 
-`configs/experiments/solvable.yaml` is `default.yaml` with `families:
-[solvable]` and only the modular formatter, and `solvable_test.yaml` is the
+`configs/experiments/solvable.yaml` is `default.yaml` minus RULER, with the
+modular formatters replacing integer-code and spreadsheet-cells. Its test split
+renders all four families and its train split only `solvable` rows in
+`integer-code-modular`. Surface seeds are keyed by formatter name, so adding
+formatters leaves existing rows byte-identical. Similarly, `solvable_test.yaml` is the
 same twin of `periodic_test_mixed.yaml`. Everything that determines a source
 must stay identical between twins (a test enforces this). To add solvable rows
 to an existing `state-tracking-long-context-v1` build:
@@ -58,7 +65,13 @@ PERIODIC_CONFIG=integer-code-modular--solvable bash scripts/build_train.sh \
 ```
 
 This builds `test` (persisting the disjointness IDs), then `train`, into
-`data/state-tracking-solvable-v2`, and tokenizes the train split.
+`data/state-tracking-solvable-v2`, and tokenizes the train split. The evaluation
+data is published on the `solvable` branch of `allenai/state-bench`:
+
+```bash
+bash scripts/build_test.sh --config configs/experiments/solvable.yaml \
+  --revision solvable --push
+```
 
 ## Install
 

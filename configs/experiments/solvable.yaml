@@ -124,9 +124,15 @@ generation:
         stratify_by_assignment_bucket: true
 
 formatters:
-  # The only formatter whose zero-based value vocabulary renders
-  # `x <- (x + d) mod 100` truthfully; see README.
+  # The modular formatters' zero-based vocabularies render `x <- (x + d) mod 100`
+  # truthfully; see README. The others have no increment template and so emit
+  # only the r-trivial, aperiodic, and periodic families. Surface seeds depend
+  # on each formatter's name, so adding formatters leaves existing rows intact.
   - config: ../formats/integer-code-modular.yaml
+  - config: ../formats/spreadsheet-cells-modular.yaml
+  - config: ../formats/cube-painting.yaml
+  - config: ../formats/status-lights.yaml
+  - config: ../formats/people-in-rooms.yaml
 
 output:
   # The formatter-independent operations trace already lives in canonical/;
