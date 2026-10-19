@@ -679,6 +679,42 @@ def test_hub_sync_passes_delete_pattern_to_huggingface(
     assert upload_call["delete_patterns"] == "*"
 
 
+def test_hub_push_to_a_revision_creates_the_branch_first(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    _write_complete_staged_repository(tmp_path)
+    calls: list[dict[str, object]] = []
+
+    class FakeApi:
+        def create_repo(self, **kwargs: object) -> None:
+            calls.append({"method": "create_repo", **kwargs})
+
+        def create_branch(self, **kwargs: object) -> None:
+            calls.append({"method": "create_branch", **kwargs})
+
+        def upload_folder(self, **kwargs: object) -> None:
+            calls.append({"method": "upload_folder", **kwargs})
+
+    fake_module = ModuleType("huggingface_hub")
+    fake_module.HfApi = FakeApi  # ty: ignore[unresolved-attribute]
+    monkeypatch.setitem(sys.modules, "huggingface_hub", fake_module)
+    monkeypatch.setattr("state_bench.hub._require_hub_dependencies", lambda: None)
+
+    plan = push_hub_repository(
+        tmp_path,
+        repo_id="example/state-bench",
+        private=True,
+        dry_run=False,
+        sync=True,
+        revision="solvable",
+    )
+    assert plan["revision"] == "solvable"
+    assert [call["method"] for call in calls] == ["create_repo", "create_branch", "upload_folder"]
+    assert calls[1]["branch"] == "solvable"
+    assert calls[2]["revision"] == "solvable"
+
+
 def test_stage_only_selected_splits(tmp_path: Path) -> None:
     pytest.importorskip("pyarrow.parquet")
     experiment = _small_experiment(tmp_path)

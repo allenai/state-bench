@@ -25,7 +25,6 @@ def test_default_experiment_loads_and_validates_capacities() -> None:
         "spreadsheet-cells",
         "status-lights",
         "people-in-rooms",
-        "ruler",
     ]
 
 

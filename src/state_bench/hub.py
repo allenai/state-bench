@@ -235,8 +235,14 @@ def push_hub_repository(
     dry_run: bool,
     sync: bool = False,
     commit_message: str = "Upload state-bench dataset",
+    revision: str | None = None,
 ) -> dict[str, Any]:
-    """Upload a staged repository; optionally replace the remote file tree."""
+    """Upload a staged repository; optionally replace the remote file tree.
+
+    A ``revision`` names a branch, created from the default branch if absent, so
+    a build can be published alongside ``main`` instead of replacing it. With
+    ``sync``, files the branch inherited from ``main`` are deleted from it.
+    """
 
     if not repo_id or "/" not in repo_id:
         raise ValueError("repo_id must have the form namespace/name")
@@ -247,6 +253,7 @@ def push_hub_repository(
         "repo_id": repo_id,
         "private": private,
         "sync": sync,
+        "revision": revision,
         "delete_patterns": ["*"] if sync else [],
         "files": [str(path.relative_to(repo_dir)) for path in files],
     }
@@ -263,10 +270,13 @@ def push_hub_repository(
         private=private,
         exist_ok=True,
     )
+    if revision is not None:
+        api.create_branch(repo_id=repo_id, repo_type="dataset", branch=revision, exist_ok=True)
     api.upload_folder(
         folder_path=repo_dir,
         repo_id=repo_id,
         repo_type="dataset",
+        revision=revision,
         commit_message=commit_message,
         delete_patterns="*" if sync else None,
     )

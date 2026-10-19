@@ -184,7 +184,9 @@ huggingface:
       - {name: tokens_1m, min_tokens: 524288, max_tokens: 1048576}
       - {name: tokens_2m_plus, min_tokens: 1048576, max_tokens: null}
   repository:
-    repo_id: jacksonp-ai2/state-bench-solvable
+    # Published on the `solvable` branch, leaving `main` on the long-context
+    # (default.yaml) data: state-bench hub push REPO --revision solvable --sync
+    repo_id: allenai/state-bench
     private: true
   card:
     license: null

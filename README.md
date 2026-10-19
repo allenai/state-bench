@@ -147,7 +147,6 @@ formatters:
   - config: ../formats/spreadsheet-cells.yaml
   - config: ../formats/status-lights.yaml
   - config: ../formats/people-in-rooms.yaml
-  - config: ../formats/ruler.yaml
 ```
 
 Generation conditions always describe periodic source traces (`complexity:
@@ -238,8 +237,8 @@ The default experiment's test split separates a padded 32-assignment source
 condition from an unpadded assignment-length sweep. The latter uses 340 source
 samples across 12 assignment buckets up to 64,000 assignments. Both conditions
 emit all three complexity classes and every configured formatting. The
-assignment and padding caps keep the most token-dense RULER prompts below
-roughly one million tokens; padding conditions cover 0%, 25%, 50%, 75%, and 90%
+assignment and padding caps were sized to keep the most token-dense RULER
+prompts (no longer rendered by default) below roughly one million tokens; padding conditions cover 0%, 25%, 50%, 75%, and 90%
 of final prompt lines. An additional integer-code condition applies 25% padding
 at every assignment bucket, stratified across easy, medium, and hard padding.
 Hub Parquet shards are capped at 50 long rows apiece. The same experiment also
