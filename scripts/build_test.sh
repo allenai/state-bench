@@ -24,8 +24,7 @@ Options:
   --config PATH   Experiment YAML (default: configs/experiments/default.yaml,
                   or the CONFIG environment variable).
   --revision BRANCH
-                  Push to this Hub branch instead of main (e.g. `solvable` for
-                  configs/experiments/solvable.yaml).
+                  Push to this Hub branch instead of main.
   -h, --help      Show this help.
 
 Steps:

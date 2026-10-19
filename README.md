@@ -66,11 +66,11 @@ PERIODIC_CONFIG=integer-code-modular--solvable bash scripts/build_train.sh \
 
 This builds `test` (persisting the disjointness IDs), then `train`, into
 `data/state-tracking-solvable-v2`, and tokenizes the train split. The evaluation
-data is published on the `solvable` branch of `allenai/state-bench`:
+data is published to `main` of `allenai/state-bench`; the earlier long-context
+release stays loadable at the `v1-lc` tag (and with RULER at `v1-with-ruler`):
 
 ```bash
-bash scripts/build_test.sh --config configs/experiments/solvable.yaml \
-  --revision solvable --push
+bash scripts/build_test.sh --config configs/experiments/solvable.yaml --push
 ```
 
 ## Install
