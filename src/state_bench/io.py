@@ -26,6 +26,7 @@ from state_bench.config import (
     FormatterSpec,
     LoadedExperiment,
     condition_uses_formatter,
+    formatter_renders_family,
     condition_uses_split,
     split_families,
     split_uses_formatter,
@@ -289,6 +290,8 @@ def _write_minimal_chunk(task: _MinimalChunkTask) -> _MinimalChunkResult:
                 # reuse it across every formatter rendered from this instance.
                 sensitivity = sensitivity_summary(instance)
                 for formatter in task.formatters:
+                    if not formatter_renders_family(formatter, complexity):
+                        continue
                     config_name = hub_config_name(
                         task.config_naming,
                         formatter=formatter.name,
@@ -405,6 +408,8 @@ def _emit_sample_records(generated: _GeneratedSample, context: _EmitContext) -> 
         )
 
         for formatter in context.formatters:
+            if not formatter_renders_family(formatter, complexity):
+                continue
             config_name = hub_config_name(
                 context.config_naming, formatter=formatter.name, complexity=complexity.value
             )
@@ -608,6 +613,7 @@ def build_dataset(
                     complexity=complexity.value,
                 )
                 for complexity in spec.generation.emitted_families()
+                if formatter_renders_family(formatter, complexity)
             }
             for complexity, config_name in sorted(config_names.items(), key=lambda item: item[1]):
                 for split, split_spec in spec.splits.items():

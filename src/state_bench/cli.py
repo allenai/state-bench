@@ -109,6 +109,10 @@ def build_parser() -> argparse.ArgumentParser:
         help="Delete remote files absent from the staged repository before uploading.",
     )
     push.add_argument("--commit-message", default="Upload state-bench dataset")
+    push.add_argument(
+        "--revision",
+        help="Upload to this branch (created from main if absent) instead of the default branch.",
+    )
     return parser
 
 
@@ -214,6 +218,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             dry_run=args.dry_run,
             sync=args.sync,
             commit_message=args.commit_message,
+            revision=args.revision,
         )
         print(json.dumps(plan, indent=2, sort_keys=True))
         return 0

@@ -43,11 +43,18 @@ The solvable family can only be rendered by a formatter that defines an
 `"1"`, ... in order, so that the rendered arithmetic is truthful.
 `configs/formats/integer-code-modular.yaml` is `integer-code` with a
 zero-based vocabulary (`"0".."99"` instead of `"1".."100"`) and the template
-`$target <- ($target + $delta) mod $modulus;`. Experiments whose formatters
-cannot render increments set `families: [r-trivial, aperiodic, periodic]`.
+`$target <- ($target + $delta) mod $modulus;`. `spreadsheet-cells-modular.yaml`
+makes the same change to `spreadsheet-cells`. Formatters without an
+`assign_increment` template (cube-painting, status-lights, people-in-rooms)
+skip the solvable family and still render the other three, but each condition
+needs at least one formatter that renders increments. Experiments with no such
+formatter set `families: [r-trivial, aperiodic, periodic]`.
 
-`configs/experiments/solvable.yaml` is `default.yaml` with `families:
-[solvable]` and only the modular formatter, and `solvable_test.yaml` is the
+`configs/experiments/solvable.yaml` is `default.yaml` minus RULER, with the
+modular formatters replacing integer-code and spreadsheet-cells. Its test split
+renders all four families and its train split only `solvable` rows in
+`integer-code-modular`. Surface seeds are keyed by formatter name, so adding
+formatters leaves existing rows byte-identical. Similarly, `solvable_test.yaml` is the
 same twin of `periodic_test_mixed.yaml`. Everything that determines a source
 must stay identical between twins (a test enforces this). To add solvable rows
 to an existing `state-tracking-long-context-v1` build:
@@ -58,7 +65,13 @@ PERIODIC_CONFIG=integer-code-modular--solvable bash scripts/build_train.sh \
 ```
 
 This builds `test` (persisting the disjointness IDs), then `train`, into
-`data/state-tracking-solvable-v2`, and tokenizes the train split.
+`data/state-tracking-solvable-v2`, and tokenizes the train split. The evaluation
+data is published to `main` of `allenai/state-bench`; the earlier long-context
+release stays loadable at the `v1-lc` tag (and with RULER at `v1-with-ruler`):
+
+```bash
+bash scripts/build_test.sh --config configs/experiments/solvable.yaml --push
+```
 
 ## Install
 
@@ -147,7 +160,6 @@ formatters:
   - config: ../formats/spreadsheet-cells.yaml
   - config: ../formats/status-lights.yaml
   - config: ../formats/people-in-rooms.yaml
-  - config: ../formats/ruler.yaml
 ```
 
 Generation conditions always describe periodic source traces (`complexity:
@@ -238,8 +250,8 @@ The default experiment's test split separates a padded 32-assignment source
 condition from an unpadded assignment-length sweep. The latter uses 340 source
 samples across 12 assignment buckets up to 64,000 assignments. Both conditions
 emit all three complexity classes and every configured formatting. The
-assignment and padding caps keep the most token-dense RULER prompts below
-roughly one million tokens; padding conditions cover 0%, 25%, 50%, 75%, and 90%
+assignment and padding caps were sized to keep the most token-dense RULER
+prompts (no longer rendered by default) below roughly one million tokens; padding conditions cover 0%, 25%, 50%, 75%, and 90%
 of final prompt lines. An additional integer-code condition applies 25% padding
 at every assignment bucket, stratified across easy, medium, and hard padding.
 Hub Parquet shards are capped at 50 long rows apiece. The same experiment also

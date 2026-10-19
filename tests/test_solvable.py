@@ -318,6 +318,7 @@ def _write_experiment(
     *,
     families: list[str] | None,
     formatter: Path = MODULAR_FORMATTER,
+    extra_formatters: tuple[Path, ...] = (),
     disjoint: bool = True,
     train_families: list[str] | None = None,
 ) -> Path:
@@ -352,7 +353,7 @@ def _write_experiment(
             },
         },
         "generation": generation,
-        "formatters": [{"config": str(formatter)}],
+        "formatters": [{"config": str(path)} for path in (formatter, *extra_formatters)],
         "output": {
             "minimal_splits": ["train"],
             "omit_canonical_splits": ["train"],
@@ -483,6 +484,42 @@ def test_the_solvable_family_requires_a_zero_based_increment_formatter(tmp_path:
         load_experiment(_write_experiment(tmp_path, "three", families=None, formatter=one_based_path))
 
 
+def test_formatters_without_increments_omit_only_the_solvable_family(tmp_path: Path) -> None:
+    from state_bench.io import build_dataset
+
+    formats = ROOT / "configs/formats"
+    extra = (formats / "spreadsheet-cells-modular.yaml", formats / "cube-painting.yaml")
+    alone = build_dataset(
+        load_experiment(_write_experiment(tmp_path, "alone", families=None)), workers=1
+    )
+    mixed = build_dataset(
+        load_experiment(
+            _write_experiment(tmp_path, "mixed", families=None, extra_formatters=extra)
+        ),
+        workers=1,
+    )
+    configs = {path.name for path in (mixed / "rendered").iterdir()}
+    assert "spreadsheet-cells-modular--solvable" in configs
+    assert "cube-painting--solvable" not in configs
+    assert {f"cube-painting--{family}" for family in ("r-trivial", "aperiodic", "periodic")} <= configs
+
+    # Surface seeds are keyed by formatter name, so adding formatters leaves the
+    # existing formatter's rows byte-identical.
+    for path in (alone / "rendered").glob("*/*.jsonl"):
+        relative = path.relative_to(alone)
+        assert (mixed / relative).read_bytes() == path.read_bytes(), relative
+
+    rows = (mixed / "rendered/spreadsheet-cells-modular--solvable/test.jsonl").read_text()
+    assert "keeping the result modulo 3." in rows
+
+    with pytest.raises(ValueError, match="assign_increment"):
+        load_experiment(
+            _write_experiment(
+                tmp_path, "named-only", families=None, formatter=formats / "cube-painting.yaml"
+            )
+        )
+
+
 def test_conditions_describe_periodic_sources_only(tmp_path: Path) -> None:
     path = _write_experiment(tmp_path, "bad", families=None)
     experiment = yaml.safe_load(path.read_text(encoding="utf-8"))
@@ -522,7 +559,10 @@ def test_solvable_experiments_stay_in_lockstep_with_their_periodic_twins(
     assert normalized(solvable_name) == normalized(periodic_name)
     solvable = load_experiment(EXPERIMENTS / solvable_name)
     assert solvable.spec.generation.emitted_families() == DERIVED_FAMILIES
-    assert [formatter.name for formatter in solvable.formatters] == ["integer-code-modular"]
+    names = [formatter.name for formatter in solvable.formatters]
+    # integer-code-modular stays first so existing rows and config names are unchanged.
+    assert names[0] == "integer-code-modular"
+    assert "ruler" not in names
     if "train" in solvable.spec.splits:
         assert split_families(solvable.spec, "train") == (Complexity.SOLVABLE,)
 

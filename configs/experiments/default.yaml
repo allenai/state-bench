@@ -57,8 +57,10 @@ generation:
       extra_assignments:
         distribution: log-spaced
         min: 8
-        # RULER is the most token-dense formatter at about 15.2 tokens per
-        # assignment; 64k assignments therefore stays just below 1m tokens.
+        # Sized for RULER (about 15.2 tokens per assignment, the most
+        # token-dense formatter) so 64k assignments stayed just below 1m
+        # tokens. RULER is no longer rendered, but the cap stays so sources
+        # match solvable.yaml and earlier builds.
         max: 64000
         growth_factor: 2.0
         sample_decay: 1.0
@@ -111,7 +113,6 @@ formatters:
   - config: ../formats/spreadsheet-cells.yaml
   - config: ../formats/status-lights.yaml
   - config: ../formats/people-in-rooms.yaml
-  - config: ../formats/ruler.yaml
 
 output:
   # The formatter-independent operations trace already lives in canonical/;

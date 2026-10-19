@@ -12,6 +12,7 @@ from state_bench.config import (
     FormatterSpec,
     LoadedExperiment,
     condition_uses_formatter,
+    formatter_renders_family,
     filler_variants,
 )
 from state_bench.distractors import generate_incorrect_states
@@ -61,6 +62,7 @@ def available_config_names(loaded: LoadedExperiment) -> tuple[str, ...]:
         for condition in loaded.spec.generation.conditions
         for complexity in loaded.spec.generation.emitted_families()
         if condition_uses_formatter(condition, formatter.name)
+        and formatter_renders_family(formatter, complexity)
     }
     return tuple(sorted(names))
 
@@ -193,6 +195,8 @@ def _resolve_config(
     matches: list[tuple[FormatterSpec, list[ConditionSpec], Complexity]] = []
     for formatter in loaded.formatters:
         for complexity in loaded.spec.generation.emitted_families():
+            if not formatter_renders_family(formatter, complexity):
+                continue
             conditions = [
                 condition
                 for condition in loaded.spec.generation.conditions

@@ -615,7 +615,18 @@ def _validate_condition_formatters(
         if unknown:
             raise ValueError(f"condition references unknown formatters: {sorted(unknown)}")
         if Complexity.SOLVABLE in experiment.generation.families:
-            for name in sorted(selected):
+            # Formatters without an increment template simply omit solvable rows,
+            # but every condition needs at least one formatter that renders them.
+            increment_formatters = [
+                name for name in sorted(selected) if available[name].templates.assign_increment
+            ]
+            if not increment_formatters:
+                raise ValueError(
+                    f"condition formatters {sorted(selected)} have no assign_increment template, "
+                    "which the solvable family requires; drop solvable from generation.families "
+                    "or add a formatter that renders increments"
+                )
+            for name in increment_formatters:
                 _validate_increment_formatter(available[name], num_values=condition.num_values)
         if any(proportion > 0 for proportion in condition.filler.proportions):
             for name in selected:
@@ -667,6 +678,12 @@ def _validate_split_formatters(
 
 def condition_uses_formatter(condition: ConditionSpec, formatter_name: str) -> bool:
     return condition.formatters is None or formatter_name in condition.formatters
+
+
+def formatter_renders_family(formatter: FormatterSpec, complexity: Complexity) -> bool:
+    """Solvable rows are rendered only by formatters that define increments."""
+
+    return complexity is not Complexity.SOLVABLE or formatter.templates.assign_increment is not None
 
 
 def condition_uses_split(condition: ConditionSpec, split_name: str) -> bool:
