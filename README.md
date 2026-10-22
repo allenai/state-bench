@@ -73,6 +73,22 @@ release stays loadable at the `v1-lc` tag (and with RULER at `v1-with-ruler`):
 bash scripts/build_test.sh --config configs/experiments/solvable.yaml --push
 ```
 
+`configs/experiments/train_mixture_{integer_code,spreadsheet,cube}.yaml` build
+a ~500M-token training mixture over three surface forms: every family in
+`integer-code-modular` and `spreadsheet-cells-modular`, and every family but
+`solvable` in `cube-painting`. Each slice keeps `default.yaml`'s test sources so
+its train split stays disjoint from them, and its train budget gives every
+format/family dataset ~45M OLMo-3 tokens. Build all three on a CPU Beaker job
+(set `WORKERS` for `build_train.sh` when the container reports the host's CPUs):
+
+```bash
+beaker experiment create configs/beaker/train-mixture-500m.yaml --workspace ai2/jacksonp
+```
+
+The tokens land in
+`state-tracking-mixture-500m/rendered-tokenized/tokens/` under the job's
+`OUTPUT_ROOT`.
+
 ## Install
 
 ```bash

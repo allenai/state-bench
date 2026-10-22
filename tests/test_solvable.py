@@ -567,6 +567,43 @@ def test_solvable_experiments_stay_in_lockstep_with_their_periodic_twins(
         assert split_families(solvable.spec, "train") == (Complexity.SOLVABLE,)
 
 
+@pytest.mark.parametrize(
+    ("mixture_name", "formatter_name", "families"),
+    [
+        ("train_mixture_integer_code.yaml", "integer-code-modular", DERIVED_FAMILIES),
+        ("train_mixture_spreadsheet.yaml", "spreadsheet-cells-modular", DERIVED_FAMILIES),
+        (
+            "train_mixture_cube.yaml",
+            "cube-painting",
+            (Complexity.R_TRIVIAL, Complexity.APERIODIC, Complexity.PERIODIC),
+        ),
+    ],
+)
+def test_train_mixture_experiments_regenerate_default_sources(
+    mixture_name: str, formatter_name: str, families: tuple[Complexity, ...]
+) -> None:
+    """Only the train budget may differ, or train stops being disjoint from test."""
+
+    def normalized(name: str) -> dict[str, Any]:
+        experiment = yaml.safe_load((EXPERIMENTS / name).read_text(encoding="utf-8"))
+        experiment["dataset"].pop("output_dir")
+        experiment["generation"].pop("families")
+        experiment.pop("formatters")
+        for split in experiment["splits"].values():
+            split.pop("formatters", None)
+            split.pop("families", None)
+        experiment["splits"]["train"].pop("samples_per_condition")
+        for condition in experiment["generation"]["conditions"]:
+            condition.pop("formatters", None)
+        experiment.get("huggingface", {}).get("repository", {}).pop("repo_id", None)
+        return experiment
+
+    assert normalized(mixture_name) == normalized("default.yaml")
+    mixture = load_experiment(EXPERIMENTS / mixture_name)
+    assert [formatter.name for formatter in mixture.formatters] == [formatter_name]
+    assert split_families(mixture.spec, "train") == families
+
+
 # --- Algebraic sanity check ---------------------------------------------------
 
 type Transformation = tuple[int, ...]

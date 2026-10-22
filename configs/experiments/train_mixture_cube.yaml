@@ -1,0 +1,185 @@
+schema_version: 1
+
+# The cube-painting slice of a ~500M-token training mixture over three surface
+# forms (train_mixture_integer_code.yaml, train_mixture_spreadsheet.yaml,
+# train_mixture_cube.yaml). Cube colors have no modular increment, so this slice
+# renders only the r-trivial, aperiodic, and periodic families.
+#
+# Every source-determining setting -- dataset name and seed, the test split and
+# its conditions, the train condition's schedule and padding -- matches
+# default.yaml, so `test` regenerates the published test sources and `train`
+# stays sample-wise disjoint from them (tests/test_solvable.py checks this).
+# Only the train budget differs between the three slices: each is sized from
+# measured OLMo-3 token counts so every format/family dataset gets ~45M tokens.
+#
+#   bash scripts/build_train.sh --config configs/experiments/train_mixture_cube.yaml \
+#     --skip-partition
+
+dataset:
+  name: state-tracking-long-context-v1
+  seed: 13
+  output_dir: ../../data/state-tracking-mixture-500m/cube
+
+splits:
+  test:
+    # This is a fixed budget for each complexity/variable-count pair. It is
+    # distributed across the log-spaced buckets below rather than repeated at
+    # every depth. Uniform log-bucket weights provide comparable coverage from
+    # short traces through the roughly one-million-token tail. The 14 target
+    # assignment buckets each receive at least 20 periodic source rows. Every
+    # source row produces periodic, aperiodic, and r-trivial rows.
+    samples_per_condition: 340
+  train:
+    # Training covers short-to-medium traces with simple padding. It stops at
+    # 256 extra assignments, leaving the long-context tail test-only. Any source
+    # whose semantics occur in test is resampled to keep the splits disjoint.
+    # ~139M OLMo-3 tokens over four variable counts, measured from a
+    # 3,000-sample build of this exact condition plus ~2% headroom.
+    samples_per_condition: 14300
+    disjoint_from: [test]
+
+generation:
+  query_mode: all
+  require_strict_witness: true
+  distinct_initial_values: false
+  # Periodic traces mostly extend deep copy provenance chains; a log-uniformly
+  # sampled count of constant resets sweeps sensitivity coverage across its
+  # full range independently of trace length.
+  aperiodic_constants: {min: 1, max: 64}
+  families: [r-trivial, aperiodic, periodic]
+  conditions:
+    # Padding is scheduled on short sources, then shared by all three derived
+    # complexity classes and every selected formatter.
+    - complexity: periodic
+      splits: [test]
+      num_variables: [2, 4, 8, 16]
+      num_values: 100
+      extra_assignments: {min: 32, max: 32}
+      # The fixed condition budget is spread across the zero-padding baseline
+      # and every nonzero proportion/distraction combination.
+      filler:
+        # Proportions are the share of final prompt lines occupied by padding.
+        proportions: [0.0, 0.25, 0.5, 0.75, 0.9]
+        distraction_levels: [easy, medium, hard]
+    # Sequence-length sweeps stay unpadded so the largest traces remain
+    # tractable; these rows are likewise emitted in all three classes.
+    - complexity: periodic
+      splits: [test]
+      num_variables: [2, 4, 8, 16]
+      num_values: 100
+      extra_assignments:
+        distribution: log-spaced
+        min: 8
+        # RULER is the most token-dense formatter at about 15.2 tokens per
+        # assignment; 64k assignments therefore stays just below 1m tokens.
+        max: 64000
+        growth_factor: 2.0
+        sample_decay: 1.0
+        jitter_fraction: 0.0
+        min_samples_per_bucket: 20
+    # Training uses a log-spaced short-to-medium sweep with the unpadded
+    # baseline and only 25% simple dot/comment padding. Its ×2 spacing matches
+    # the test sweep, while the 256-assignment cap preserves a test-only tail.
+    - complexity: periodic
+      splits: [train]
+      formatters: [cube-painting]
+      num_variables: [2, 4, 8, 16]
+      num_values: 100
+      extra_assignments:
+        distribution: log-spaced
+        # A floor of 8 still fits at least one complete TMP-based swap.
+        min: 8
+        max: 256
+        growth_factor: 2.0
+        sample_decay: 1.0
+        jitter_fraction: 0.0
+        min_samples_per_bucket: 1
+      filler:
+        proportions: [0.0, 0.25]
+        distraction_levels: [easy]
+    # Add padded integer-code examples at every assignment depth without
+    # changing any of the existing test rows above. A moderate 25% padding
+    # share keeps even the longest hard-padding prompts tractable.
+    - complexity: periodic
+      splits: [test]
+      formatters: [cube-painting]
+      num_variables: [2, 4, 8, 16]
+      num_values: 100
+      extra_assignments:
+        distribution: log-spaced
+        min: 8
+        max: 64000
+        growth_factor: 2.0
+        sample_decay: 1.0
+        jitter_fraction: 0.0
+        min_samples_per_bucket: 20
+      filler:
+        proportions: [0.25]
+        distraction_levels: [easy, medium, hard]
+        stratify_by_assignment_bucket: true
+
+formatters:
+  - config: ../formats/cube-painting.yaml
+
+output:
+  # The formatter-independent operations trace already lives in canonical/;
+  # duplicating it into every rendered row bloats the long-sequence rows and
+  # their write cost, so keep it out of the rendered artifacts.
+  include_canonical_trace: false
+  include_final_state: true
+  # The training corpus is consumed as prompt/completion pairs, so avoid storing
+  # redundant semantic traces, choices, and a canonical copy for every train
+  # row. Test remains the full inspection/evaluation artifact.
+  minimal_splits: [train]
+  omit_canonical_splits: [train]
+  # Keeping a Python set of every generated semantic ID is infeasible at the
+  # multi-billion-token training scale. Test IDs are still retained to enforce
+  # train/test disjointness.
+  track_unique_semantics: false
+  # Skip the post-build reread of the entire corpus. Hub staging hashes its
+  # published artifact independently.
+  hash_files: false
+  # Long rows are sharded much more finely to keep Parquet conversion and
+  # selective downloads manageable.
+  shard_size: 50
+  target_shard_bytes: 128000000
+  multiple_choice:
+    num_distractors: 4
+    shuffle_choices: true
+
+huggingface:
+  include_canonical_config: true
+  config_naming: "{formatter}--{complexity}"
+  staging_workers: 2
+  # Rendered configs are exposed as independently loadable splits. Bounds are
+  # half-open [min, max) where each named split's upper bound is exactly its
+  # namesake power of two, so a named 128k split holds prompts in (64k, 128k]
+  # tokens and never exceeds 131072 tokens.
+  token_strata:
+    tokenizer: allenai/Olmo-3-1025-7B
+    # Gigatoken makes exact per-row OLMo-3 lengths practical during staging.
+    mode: exact
+    field: prefix
+    # Short prompts use larger batches, while the character budget keeps
+    # near-million-token prompts from occupying the same batch.
+    batch_size: 64
+    max_batch_characters: 16000000
+    ranges:
+      - {name: tokens_under_2k, min_tokens: 0, max_tokens: 2048}
+      - {name: tokens_4k, min_tokens: 2048, max_tokens: 4096}
+      - {name: tokens_8k, min_tokens: 4096, max_tokens: 8192}
+      - {name: tokens_16k, min_tokens: 8192, max_tokens: 16384}
+      - {name: tokens_32k, min_tokens: 16384, max_tokens: 32768}
+      - {name: tokens_64k, min_tokens: 32768, max_tokens: 65536}
+      - {name: tokens_128k, min_tokens: 65536, max_tokens: 131072}
+      - {name: tokens_256k, min_tokens: 131072, max_tokens: 262144}
+      - {name: tokens_512k, min_tokens: 262144, max_tokens: 524288}
+      - {name: tokens_1m, min_tokens: 524288, max_tokens: 1048576}
+      - {name: tokens_2m_plus, min_tokens: 1048576, max_tokens: null}
+  repository:
+    repo_id: jacksonp-ai2/state-bench-mixture-500m-cube
+    private: true
+  card:
+    license: null
+    language: [en]
+    tags: [state-tracking, formal-languages, long-context, llm-evaluation]

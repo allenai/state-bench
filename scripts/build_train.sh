@@ -24,6 +24,15 @@ CONFIG="${CONFIG:-configs/experiments/default.yaml}"
 SENS_BUCKETS="${SENS_BUCKETS:-16}"
 SENS_FIELD="${SENS_FIELD:-sensitivity_coverage}"
 PERIODIC_CONFIG="${PERIODIC_CONFIG:-integer-code--periodic}"
+# Containers often report the host's CPU count rather than their allocation, so
+# allow pinning the generation and tokenization worker counts explicitly.
+WORKERS="${WORKERS:-}"
+BUILD_WORKERS=()
+TOKENIZE_WORKERS=()
+if [[ -n "$WORKERS" ]]; then
+    BUILD_WORKERS=(--workers "$WORKERS")
+    TOKENIZE_WORKERS=(--processes "$WORKERS")
+fi
 SKIP_TEST=0
 SKIP_BUILD=0
 SKIP_PARTITION=0
@@ -65,6 +74,8 @@ Environment:
   SENS_FIELD        Record field the buckets are ordered by
                     (default: sensitivity_coverage).
   PERIODIC_CONFIG   Rendered config to partition (default: integer-code--periodic).
+  WORKERS           Generation and tokenization worker count (default: the
+                    build and tokenizer defaults, which follow os.cpu_count()).
 
 Derived artifacts (rendered-sensitivity/, rendered-tokenized/,
 rendered-sensitivity-tokenized/) are deleted and regenerated on each run.
@@ -120,11 +131,11 @@ else
         echo ">> Skipping test build; reusing persisted semantics/test.ids"
     else
         echo ">> Building test split from $CONFIG (needed for train disjointness)"
-        uv run state-bench build "$CONFIG" --splits test
+        uv run state-bench build "$CONFIG" --splits test ${BUILD_WORKERS[@]+"${BUILD_WORKERS[@]}"}
     fi
 
     echo ">> Building train split from $CONFIG"
-    uv run state-bench build "$CONFIG" --splits train
+    uv run state-bench build "$CONFIG" --splits train ${BUILD_WORKERS[@]+"${BUILD_WORKERS[@]}"}
 fi
 
 if [[ "$SKIP_PARTITION" -eq 1 ]]; then
@@ -179,14 +190,16 @@ echo ">> Tokenizing train splits into $TOKENS_DEST"
 rm -rf "$TOKENS_DEST"
 uv run --no-sync scripts/tokenize_dataset.py "$DATASET_ROOT/rendered" \
     --destination "$TOKENS_DEST" \
-    --only-splits train
+    --only-splits train \
+    ${TOKENIZE_WORKERS[@]+"${TOKENIZE_WORKERS[@]}"}
 
 if [[ "$SKIP_PARTITION" -eq 1 ]]; then
     echo ">> Skipping bucket tokenization (--skip-partition)"
 else
     echo ">> Tokenizing sensitivity buckets into $SENS_TOKENS_DEST"
     rm -rf "$SENS_TOKENS_DEST"
-    uv run --no-sync scripts/tokenize_dataset.py "$SENS_DIR" --destination "$SENS_TOKENS_DEST"
+    uv run --no-sync scripts/tokenize_dataset.py "$SENS_DIR" --destination "$SENS_TOKENS_DEST" \
+        ${TOKENIZE_WORKERS[@]+"${TOKENIZE_WORKERS[@]}"}
 
     echo ">> Merging bucket token directories into $TOKENS_DEST/tokens/"
     mv "$SENS_TOKENS_DEST/tokens/"* "$TOKENS_DEST/tokens/"
