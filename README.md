@@ -82,7 +82,7 @@ format/family dataset ~45M OLMo-3 tokens. Build all three on a CPU Beaker job
 (set `WORKERS` for `build_train.sh` when the container reports the host's CPUs):
 
 ```bash
-beaker experiment create configs/beaker/train-mixture-500m.yaml --workspace ai2/jacksonp
+beaker experiment create configs/beaker/train-mixture-500m.yaml --workspace ai2/oe-olmo3p5-mt
 ```
 
 The tokens land in

@@ -2,12 +2,12 @@
 # train mixture (configs/experiments/train_mixture_*.yaml) on CPUs.
 #
 #   beaker experiment create configs/beaker/train-mixture-500m.yaml \
-#     --workspace ai2/jacksonp --name state-bench-train-mixture-500m
+#     --workspace ai2/oe-olmo3p5-mt --name state-bench-train-mixture-500m
 #
 # Output lands in OUTPUT_ROOT/state-tracking-mixture-500m/rendered-tokenized/tokens/.
 version: v2
 description: state-bench ~500M-token train mixture (integer code, spreadsheet cells, cube painting)
-budget: ai2/oe-omai
+budget: ai2/oe-other
 tasks:
   - name: build-train-mixture
     image:
