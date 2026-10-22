@@ -38,7 +38,7 @@ tasks:
       cpuCount: 32
       memory: 128GiB
     context:
-      priority: normal
+      priority: urgent
       preemptible: true
     constraints:
       cluster: [ai2/saturn, ai2/jupiter, ai2/ceres]
