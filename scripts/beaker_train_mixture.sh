@@ -25,7 +25,12 @@ if ! command -v uv >/dev/null; then
     curl -LsSf https://astral.sh/uv/install.sh | sh
 fi
 # The tokenization extra builds jopetty/dolma's Rust extension from source,
-# and its libz-ng-sys dependency shells out to cmake.
+# and its libz-ng-sys dependency shells out to cmake. jacksonp/beaker-dev ships
+# cmake and a C toolchain but no Rust, so install a minimal one when missing.
+if ! command -v cargo >/dev/null; then
+    echo ">> cargo not found; installing a minimal Rust toolchain"
+    curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal
+fi
 for tool in cargo cmake; do
     if ! command -v "$tool" >/dev/null; then
         echo "$tool is required to build dolma; use an image that provides it" >&2
@@ -38,6 +43,12 @@ echo ">> Writing data to $OUTPUT_ROOT with $WORKERS workers"
 mkdir -p "$OUTPUT_ROOT"
 rm -rf data
 ln -s "$OUTPUT_ROOT" data
+
+# Build dolma now so a toolchain problem fails in minutes, not after generation.
+# build_train.sh re-syncs this environment from uv's cache before tokenizing.
+echo ">> Building the tokenization environment"
+uv sync --extra tokenization
+uv run --no-sync python -c "import huggingface_hub; from dolma.tokenizer import tokenize_in_parallel"
 
 for config in "${MIXTURE_CONFIGS[@]}"; do
     echo ">> Building $config"
