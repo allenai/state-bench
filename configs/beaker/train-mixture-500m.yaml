@@ -39,10 +39,10 @@ tasks:
       memory: 128GiB
     context:
       priority: urgent
-      # A nonzero minimum runtime (in nanoseconds; 3h) makes this an allocated job
-      # that can't be preempted until then. The job never checkpoints, so this
-      # covers the whole ~1-2h run; the API rejects it alongside `preemptible`.
-      minRuntime: 10800000000000
+      # A nonzero minimum runtime makes this an allocated job that can't be
+      # preempted until then. The job never checkpoints, so this covers the whole
+      # ~1-2h run; the API rejects it alongside `preemptible`.
+      minRuntime: 3h
       autoResume: true
     constraints:
       cluster: [ai2/saturn, ai2/jupiter, ai2/ceres, ai2/neptune]
