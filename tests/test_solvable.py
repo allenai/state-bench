@@ -582,7 +582,7 @@ def test_solvable_experiments_stay_in_lockstep_with_their_periodic_twins(
 def test_train_mixture_experiments_regenerate_default_sources(
     mixture_name: str, formatter_name: str, families: tuple[Complexity, ...]
 ) -> None:
-    """Only the train budget may differ, or train stops being disjoint from test."""
+    """Only the train budget and length schedule may differ, or test sources change."""
 
     def normalized(name: str) -> dict[str, Any]:
         experiment = yaml.safe_load((EXPERIMENTS / name).read_text(encoding="utf-8"))
@@ -595,6 +595,10 @@ def test_train_mixture_experiments_regenerate_default_sources(
         experiment["splits"]["train"].pop("samples_per_condition")
         for condition in experiment["generation"]["conditions"]:
             condition.pop("formatters", None)
+            if condition.get("splits") == ["train"]:
+                extra = condition["extra_assignments"]
+                extra.pop("max")
+                extra.pop("sample_decay")
         experiment.get("huggingface", {}).get("repository", {}).pop("repo_id", None)
         return experiment
 

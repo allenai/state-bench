@@ -77,7 +77,9 @@ bash scripts/build_test.sh --config configs/experiments/solvable.yaml --push
 a ~500M-token training mixture over three surface forms: every family in
 `integer-code-modular` and `spreadsheet-cells-modular`, and every family but
 `solvable` in `cube-painting`. Each slice keeps `default.yaml`'s test sources so
-its train split stays disjoint from them, and its train budget gives every
+its train split stays disjoint from them. Its train sweep runs from 8 extra
+assignments up to a per-format cap that keeps the longest rows near 256k tokens,
+with 0.7× the rows at each doubling of length, and its budget gives every
 format/family dataset ~45M OLMo-3 tokens. Build all three on a CPU Beaker job
 (set `WORKERS` for `build_train.sh` when the container reports the host's CPUs):
 

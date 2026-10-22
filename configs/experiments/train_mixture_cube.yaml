@@ -5,12 +5,13 @@ schema_version: 1
 # train_mixture_cube.yaml). Cube colors have no modular increment, so this slice
 # renders only the r-trivial, aperiodic, and periodic families.
 #
-# Every source-determining setting -- dataset name and seed, the test split and
-# its conditions, the train condition's schedule and padding -- matches
-# default.yaml, so `test` regenerates the published test sources and `train`
-# stays sample-wise disjoint from them (tests/test_solvable.py checks this).
-# Only the train budget differs between the three slices: each is sized from
-# measured OLMo-3 token counts so every format/family dataset gets ~45M tokens.
+# Every setting that determines test sources -- dataset name and seed, the test
+# split and its conditions, and the condition order -- matches default.yaml, so
+# `test` regenerates the published test sources and `train` stays sample-wise
+# disjoint from them (tests/test_solvable.py checks this). The train condition
+# keeps default.yaml's variables and padding but sweeps traces up to ~256k
+# tokens; its length cap and budget are sized per slice from measured OLMo-3
+# token counts so every format/family dataset gets ~45M tokens.
 #
 #   bash scripts/build_train.sh --config configs/experiments/train_mixture_cube.yaml \
 #     --skip-partition
@@ -30,12 +31,11 @@ splits:
     # source row produces periodic, aperiodic, and r-trivial rows.
     samples_per_condition: 340
   train:
-    # Training covers short-to-medium traces with simple padding. It stops at
-    # 256 extra assignments, leaving the long-context tail test-only. Any source
+    # Training sweeps traces up to ~256k tokens with simple padding. Any source
     # whose semantics occur in test is resampled to keep the splits disjoint.
-    # ~139M OLMo-3 tokens over four variable counts, measured from a
-    # 3,000-sample build of this exact condition plus ~2% headroom.
-    samples_per_condition: 14300
+    # ~138M OLMo-3 tokens over four variable counts, scaled from a full
+    # build of this exact condition, plus ~1% headroom.
+    samples_per_condition: 3100
     disjoint_from: [test]
 
 generation:
@@ -77,9 +77,11 @@ generation:
         sample_decay: 1.0
         jitter_fraction: 0.0
         min_samples_per_bucket: 20
-    # Training uses a log-spaced short-to-medium sweep with the unpadded
-    # baseline and only 25% simple dot/comment padding. Its ×2 spacing matches
-    # the test sweep, while the 256-assignment cap preserves a test-only tail.
+    # Training uses a log-spaced sweep with the unpadded baseline and only 25%
+    # simple padding. Its ×2 spacing matches the test sweep. The cap keeps this
+    # format's longest family (periodic) at most ~235k tokens, and each doubling
+    # of length gets 0.7× the rows, so long traces get ~20% of the tokens while
+    # short ones keep most of the rows.
     - complexity: periodic
       splits: [train]
       formatters: [cube-painting]
@@ -89,9 +91,9 @@ generation:
         distribution: log-spaced
         # A floor of 8 still fits at least one complete TMP-based swap.
         min: 8
-        max: 256
+        max: 19000
         growth_factor: 2.0
-        sample_decay: 1.0
+        sample_decay: 0.7
         jitter_fraction: 0.0
         min_samples_per_bucket: 1
       filler:
