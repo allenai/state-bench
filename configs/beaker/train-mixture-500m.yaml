@@ -45,5 +45,6 @@ tasks:
       minRuntime: 3h
       autoResume: true
     constraints:
-      # ai2/oe-olmo3p5-mt has no allocation on Jupiter, which rejects allocated jobs.
-      cluster: [ai2/saturn, ai2/ceres, ai2/neptune]
+      # ai2/oe-olmo3p5-mt has an allocation only on Saturn; Jupiter, Ceres, and
+      # Neptune reject jobs with a minimum runtime from it at submission.
+      cluster: [ai2/saturn]
