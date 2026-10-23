@@ -1,0 +1,52 @@
+# Build and tokenize the ~1B-token integer-code / spreadsheet / cube-painting
+# train mixture (configs/experiments/train_mixture_1b_*.yaml) on CPUs.
+#
+#   beaker experiment create configs/beaker/train-mixture-1b.yaml \
+#     --workspace ai2/oe-olmo3p5-mt --name state-bench-train-mixture-1b
+#
+# Output lands in OUTPUT_ROOT/state-tracking-mixture-1b/rendered-tokenized/tokens/.
+version: v2
+description: state-bench ~1B-token train mixture (integer code, spreadsheet cells, cube painting)
+budget: ai2/oe-other
+tasks:
+  - name: build-train-mixture
+    image:
+      beaker: jacksonp/beaker-dev
+    command: [bash, -c]
+    arguments:
+      - >-
+        set -euo pipefail &&
+        git clone https://github.com/allenai/state-bench.git /workspace/state-bench &&
+        cd /workspace/state-bench &&
+        git checkout "$GIT_REF" &&
+        bash scripts/beaker_train_mixture.sh
+    envVars:
+      - name: GIT_REF
+        value: jacksonp/train-mixture-500m
+      - name: MIXTURE
+        value: 1b
+      - name: OUTPUT_ROOT
+        value: /weka/oe-training-default/jacksonp/state-bench-data
+      # One fewer than cpuCount: os.cpu_count() reports the host, not the allocation.
+      - name: WORKERS
+        value: "31"
+    datasets:
+      - mountPath: /weka/oe-training-default
+        source:
+          weka: oe-training-default
+    result:
+      path: /results
+    resources:
+      cpuCount: 32
+      memory: 128GiB
+    context:
+      priority: urgent
+      # A nonzero minimum runtime makes this an allocated job that can't be
+      # preempted until then. The job never checkpoints, so this covers the whole
+      # run; the API rejects it alongside `preemptible`.
+      minRuntime: 3h
+      autoResume: true
+    constraints:
+      # ai2/oe-olmo3p5-mt has an allocation only on Saturn; Jupiter, Ceres, and
+      # Neptune reject jobs with a minimum runtime from it at submission.
+      cluster: [ai2/saturn]

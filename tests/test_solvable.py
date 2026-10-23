@@ -567,20 +567,21 @@ def test_solvable_experiments_stay_in_lockstep_with_their_periodic_twins(
         assert split_families(solvable.spec, "train") == (Complexity.SOLVABLE,)
 
 
+@pytest.mark.parametrize("prefix", ["train_mixture_", "train_mixture_1b_"])
 @pytest.mark.parametrize(
-    ("mixture_name", "formatter_name", "families"),
+    ("slice_name", "formatter_name", "families"),
     [
-        ("train_mixture_integer_code.yaml", "integer-code-modular", DERIVED_FAMILIES),
-        ("train_mixture_spreadsheet.yaml", "spreadsheet-cells-modular", DERIVED_FAMILIES),
+        ("integer_code", "integer-code-modular", DERIVED_FAMILIES),
+        ("spreadsheet", "spreadsheet-cells-modular", DERIVED_FAMILIES),
         (
-            "train_mixture_cube.yaml",
+            "cube",
             "cube-painting",
             (Complexity.R_TRIVIAL, Complexity.APERIODIC, Complexity.PERIODIC),
         ),
     ],
 )
 def test_train_mixture_experiments_regenerate_default_sources(
-    mixture_name: str, formatter_name: str, families: tuple[Complexity, ...]
+    prefix: str, slice_name: str, formatter_name: str, families: tuple[Complexity, ...]
 ) -> None:
     """Only the train budget and length schedule may differ, or test sources change."""
 
@@ -602,6 +603,7 @@ def test_train_mixture_experiments_regenerate_default_sources(
         experiment.get("huggingface", {}).get("repository", {}).pop("repo_id", None)
         return experiment
 
+    mixture_name = f"{prefix}{slice_name}.yaml"
     assert normalized(mixture_name) == normalized("default.yaml")
     mixture = load_experiment(EXPERIMENTS / mixture_name)
     assert [formatter.name for formatter in mixture.formatters] == [formatter_name]

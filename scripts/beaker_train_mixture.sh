@@ -1,23 +1,31 @@
 #!/usr/bin/env bash
-# Build and tokenize the ~500M-token train mixture inside a Beaker job.
+# Build and tokenize a train mixture inside a Beaker job.
 #
-# Runs from the root of a state-bench checkout (configs/beaker/train-mixture-500m.yaml
-# clones one and calls this script). Each of the three slices -- integer code,
-# spreadsheet cells, and cube painting -- is built and tokenized by
-# scripts/build_train.sh into its own directory under data/, which is a symlink
-# to OUTPUT_ROOT on Weka. The slices' token directories are then gathered into
-# one data/state-tracking-mixture-500m/rendered-tokenized/tokens/ tree.
+# Runs from the root of a state-bench checkout (configs/beaker/train-mixture-*.yaml
+# clones one and calls this script). MIXTURE selects the ~500M-token (500m,
+# train_mixture_*.yaml) or ~1B-token (1b, train_mixture_1b_*.yaml) mixture. Each
+# of its three slices -- integer code, spreadsheet cells, and cube painting -- is
+# built and tokenized by scripts/build_train.sh into its own directory under
+# data/, which is a symlink to OUTPUT_ROOT on Weka. The slices' token directories
+# are then gathered into one data/state-tracking-mixture-$MIXTURE/
+# rendered-tokenized/tokens/ tree.
 
 set -euo pipefail
 
 : "${OUTPUT_ROOT:?Set OUTPUT_ROOT to a persistent directory, e.g. on Weka.}"
 WORKERS="${WORKERS:-$(nproc)}"
+MIXTURE="${MIXTURE:-500m}"
+case "$MIXTURE" in
+    500m) CONFIG_PREFIX=configs/experiments/train_mixture_ ;;
+    1b) CONFIG_PREFIX=configs/experiments/train_mixture_1b_ ;;
+    *) echo "MIXTURE must be 500m or 1b, not '$MIXTURE'" >&2; exit 1 ;;
+esac
 MIXTURE_CONFIGS=(
-    configs/experiments/train_mixture_integer_code.yaml
-    configs/experiments/train_mixture_spreadsheet.yaml
-    configs/experiments/train_mixture_cube.yaml
+    "${CONFIG_PREFIX}integer_code.yaml"
+    "${CONFIG_PREFIX}spreadsheet.yaml"
+    "${CONFIG_PREFIX}cube.yaml"
 )
-MIXTURE_ROOT=data/state-tracking-mixture-500m
+MIXTURE_ROOT="data/state-tracking-mixture-$MIXTURE"
 
 export PATH="$HOME/.local/bin:$HOME/.cargo/bin:$PATH"
 if ! command -v uv >/dev/null; then

@@ -91,6 +91,13 @@ The tokens land in
 `state-tracking-mixture-500m/rendered-tokenized/tokens/` under the job's
 `OUTPUT_ROOT`.
 
+`configs/experiments/train_mixture_1b_{integer_code,spreadsheet,cube}.yaml` are
+the same mixture at ~1B tokens: caps that keep the longest rows near 1M tokens
+and budgets that give every format/family dataset ~91M tokens.
+`configs/beaker/train-mixture-1b.yaml` builds it (`MIXTURE=1b` selects these
+configs in `scripts/beaker_train_mixture.sh`) into
+`state-tracking-mixture-1b/rendered-tokenized/tokens/`.
+
 ## Install
 
 ```bash
